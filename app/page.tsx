@@ -1,29 +1,46 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import Head from "next/head";
 import { ethers } from "ethers";
 
-// BaggiezTickets on Linea Mainnet
-const CONTRACT_ADDRESS = "0xc4Ab0d9FAcFAc11104E640718dCaB4df782428CC";
+// --------------------------------------------------
+// Config
+// --------------------------------------------------
 
-const CONTRACT_ABI = [
-  "function mintPrice() view returns (uint256)",
-  "function maxPerTx() view returns (uint256)",
-  "function maxPerWallet() view returns (uint256)",
-  "function maxSupply() view returns (uint256)",
-  "function totalSupply() view returns (uint256)",
-  "function walletMints(address) view returns (uint256)",
-  "function ticketsPer24h() view returns (uint256)",
-  "function previewFreeMints(address) view returns (uint256)",
-  "function mintTickets(uint256 quantity) payable",
-];
+// Linea MAINNET TbagDailyFreeBuys contract
+const TBAG_DAILY_BUYS_ADDRESS =
+  process.env.NEXT_PUBLIC_TBAG_DAILY_BUYS_ADDRESS ??
+  "0xcA2538De53E21128B298a80d92f67b33605FEECC";
 
-// Linea PoH API + PoH completion URL
+// Linea mainnet
+const TARGET_CHAIN_ID_DEC = 59144;
+const TARGET_CHAIN_ID_HEX = "0xe708";
+const TARGET_NETWORK_LABEL = "Linea";
+
+// TBAG decimals (standard)
+const TBAG_DECIMALS = 18;
+
+// Linea PoH APIs
 const POH_API_BASE = "https://poh-api.linea.build/poh/v2";
+const POH_SIGNER_API_BASE = "https://poh-signer-api.linea.build/poh/v2";
 const POH_PORTAL_URL =
   "https://linea.build/hub/apps/sumsub-reusable-identity";
 
-// TypeScript: allow window.ethereum
+// TbagDailyFreeBuys ABI (only what we use)
+const TBAG_DAILY_BUYS_ABI = [
+  "function tbagPerBuy() view returns (uint256)",
+  "function maxBuysPerDay() view returns (uint8)",
+  "function totalBuysGlobal() view returns (uint256)",
+  "function totalBuys(address user) view returns (uint64)",
+  "function claimableBuys(address user) view returns (uint256)",
+  "function claimableTokens(address user) view returns (uint256)",
+  "function remainingBuysToday(address user) view returns (uint256)",
+  "function buy(bytes pohSignature) payable",
+  "function claimAll() returns (uint256 buysClaimed, uint256 tokensPaid)",
+];
+
+// Allow window.ethereum
 declare global {
   interface Window {
     ethereum?: any;
@@ -31,63 +48,67 @@ declare global {
 }
 
 export default function Home() {
+  // --------------------------------------------------
+  // Wallet / network
+  // --------------------------------------------------
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [chainId, setChainId] = useState<string | null>(null);
+  const [autoConnectEnabled, setAutoConnectEnabled] = useState(true);
 
-  const [mintPrice, setMintPrice] = useState<ethers.BigNumber | null>(null);
-  const [maxPerTx, setMaxPerTx] = useState<number>(0);
-  const [maxPerWallet, setMaxPerWallet] = useState<number>(0);
-  const [maxSupply, setMaxSupply] = useState<number>(0);
-  const [totalSupply, setTotalSupply] = useState<number>(0);
-  const [walletMints, setWalletMints] = useState<number>(0);
-  const [ticketsPer24h, setTicketsPer24h] = useState<number>(0);
-
-  const [quantity, setQuantity] = useState<number>(1);
-  const [freeMintsRemaining, setFreeMintsRemaining] = useState<number | null>(
-    null
-  );
-  const [isLoadingData, setIsLoadingData] = useState<boolean>(false);
-  const [isMinting, setIsMinting] = useState<boolean>(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
-
-  // PoH state
-  const [isPohVerified, setIsPohVerified] = useState<boolean | null>(null);
-  const [isCheckingPoh, setIsCheckingPoh] = useState<boolean>(false);
-
-  // Auto-connect toggle (prevents reconnect after manual disconnect)
-  const [autoConnectEnabled, setAutoConnectEnabled] = useState<boolean>(true);
-
-  // -------------------------
-  // Chain ID helper
-  // -------------------------
   let numericChainId: number | null = null;
   if (chainId) {
-    if (chainId.startsWith("0x") || chainId.startsWith("0X")) {
-      numericChainId = parseInt(chainId, 16);
-    } else {
-      numericChainId = parseInt(chainId, 10);
-    }
+    numericChainId = chainId.startsWith("0x")
+      ? parseInt(chainId, 16)
+      : parseInt(chainId, 10);
   }
-  const isOnLineaMainnet = numericChainId === 59144; // Linea mainnet chain ID
+  const isOnTargetNetwork = numericChainId === TARGET_CHAIN_ID_DEC;
 
-  // -------------------------
-  // PoH check helper
-  // -------------------------
+  // --------------------------------------------------
+  // Contract data
+  // --------------------------------------------------
+  const [tbagPerBuy, setTbagPerBuy] = useState<ethers.BigNumber | null>(null);
+  const [maxBuysPerDay, setMaxBuysPerDay] = useState<number>(0);
+  const [totalBuysGlobal, setTotalBuysGlobal] = useState<number>(0);
 
+  // Per-user
+  const [yourTotalBuys, setYourTotalBuys] = useState<number>(0);
+  const [remainingBuysToday, setRemainingBuysToday] = useState<
+    number | null
+  >(null);
+  const [claimableBuys, setClaimableBuys] = useState<number | null>(null);
+  const [claimableTokens, setClaimableTokens] = useState<
+    ethers.BigNumber | null
+  >(null);
+
+  // --------------------------------------------------
+  // UI state
+  // --------------------------------------------------
+  const [activeTab, setActiveTab] = useState<"buy" | "claim">("buy");
+  const [isLoadingData, setIsLoadingData] = useState(false);
+  const [isBuying, setIsBuying] = useState(false);
+  const [isClaiming, setIsClaiming] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [showWelcomeModal, setShowWelcomeModal] = useState(true);
+
+  // PoH
+  const [isPohVerified, setIsPohVerified] = useState<boolean | null>(null);
+  const [isCheckingPoh, setIsCheckingPoh] = useState(false);
+
+  // --------------------------------------------------
+  // Helpers: PoH status (UX only)
+  // --------------------------------------------------
   const checkPohStatus = async (address: string) => {
     try {
       setIsCheckingPoh(true);
       setIsPohVerified(null);
 
       const res = await fetch(`${POH_API_BASE}/${address}`);
-      if (!res.ok) {
-        throw new Error(`PoH HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`PoH HTTP ${res.status}`);
 
       const text = (await res.text()).trim(); // "true" or "false"
-      const isHuman = text === "true";
-      setIsPohVerified(isHuman);
+      setIsPohVerified(text === "true");
     } catch (err) {
       console.error("PoH check failed:", err);
       setIsPohVerified(null);
@@ -97,17 +118,78 @@ export default function Home() {
     }
   };
 
-  // -------------------------
-  // Connect / Disconnect wallet
-  // -------------------------
+  // --------------------------------------------------
+  // Load contract data
+  // --------------------------------------------------
+  const loadContractData = async (address?: string | null) => {
+    try {
+      setIsLoadingData(true);
+      setErrorMessage(null);
 
+      if (typeof window === "undefined" || !window.ethereum) return;
+
+      const provider = new ethers.providers.Web3Provider(window.ethereum);
+      const contract = new ethers.Contract(
+        TBAG_DAILY_BUYS_ADDRESS,
+        TBAG_DAILY_BUYS_ABI,
+        provider
+      );
+
+      // Global
+      const [tbagPerBuyBn, maxBuysPerDayBn, totalBuysGlobalBn] =
+        await Promise.all([
+          contract.tbagPerBuy(),
+          contract.maxBuysPerDay(),
+          contract.totalBuysGlobal(),
+        ]);
+
+      setTbagPerBuy(tbagPerBuyBn);
+      setMaxBuysPerDay(Number(maxBuysPerDayBn));
+      setTotalBuysGlobal(totalBuysGlobalBn.toNumber());
+
+      if (address) {
+        const [
+          yourTotalBuysBn,
+          remainingBuysTodayBn,
+          claimableBuysBn,
+          claimableTokensBn,
+        ] = await Promise.all([
+          contract.totalBuys(address),
+          contract.remainingBuysToday(address),
+          contract.claimableBuys(address),
+          contract.claimableTokens(address),
+        ]);
+
+        setYourTotalBuys(Number(yourTotalBuysBn));
+        setRemainingBuysToday(remainingBuysTodayBn.toNumber());
+        setClaimableBuys(claimableBuysBn.toNumber());
+        setClaimableTokens(claimableTokensBn);
+      } else {
+        setYourTotalBuys(0);
+        setRemainingBuysToday(null);
+        setClaimableBuys(null);
+        setClaimableTokens(null);
+      }
+    } catch (err) {
+      console.error("Error loading contract data:", err);
+      setErrorMessage(
+        "Error loading contract data. Check network & contract address."
+      );
+    } finally {
+      setIsLoadingData(false);
+    }
+  };
+
+  // --------------------------------------------------
+  // Connect / disconnect
+  // --------------------------------------------------
   const connectWallet = async () => {
     try {
       setErrorMessage(null);
       setSuccessMessage(null);
 
       if (typeof window === "undefined" || !window.ethereum) {
-        setErrorMessage("MetaMask not found. Please install it to mint.");
+        setErrorMessage("MetaMask not found. Please install it to continue.");
         return;
       }
 
@@ -120,40 +202,33 @@ export default function Home() {
 
       const cid = await window.ethereum.request({ method: "eth_chainId" });
       setChainId(cid);
-
-      // Ensure auto-connect is enabled again after a manual connect
       setAutoConnectEnabled(true);
 
-      // Load contract data + PoH after connect
-      await Promise.all([
-        loadContractData(selected),
-        checkPohStatus(selected),
-      ]);
-    } catch (err: any) {
+      await Promise.all([loadContractData(selected), checkPohStatus(selected)]);
+    } catch (err) {
       console.error("Error connecting wallet:", err);
       setErrorMessage("Failed to connect wallet.");
     }
   };
 
   const disconnectWallet = () => {
-    // We can't force MetaMask to "disconnect", but we can clear local state
     setWalletAddress(null);
     setChainId(null);
-    setWalletMints(0);
-    setFreeMintsRemaining(null);
+    setYourTotalBuys(0);
+    setRemainingBuysToday(null);
+    setClaimableBuys(null);
+    setClaimableTokens(null);
     setIsPohVerified(null);
     setIsCheckingPoh(false);
     setErrorMessage(null);
     setSuccessMessage(null);
-    // Disable auto-connect so useEffect doesn't immediately reconnect
     setAutoConnectEnabled(false);
   };
 
-  // -------------------------
-  // Switch to Linea (Mainnet)
-  // -------------------------
-
-  const switchToLinea = async () => {
+  // --------------------------------------------------
+  // Switch network
+  // --------------------------------------------------
+  const switchToTargetNetwork = async () => {
     if (typeof window === "undefined" || !window.ethereum) {
       setErrorMessage("MetaMask not found.");
       return;
@@ -163,34 +238,33 @@ export default function Home() {
       setErrorMessage(null);
       setSuccessMessage(null);
 
-      // Try to switch first
       await window.ethereum.request({
         method: "wallet_switchEthereumChain",
-        params: [{ chainId: "0xe708" }], // 59144 in hex (Linea mainnet)
+        params: [{ chainId: TARGET_CHAIN_ID_HEX }],
       });
 
-      // If successful, refresh chainId and data
       const cid = await window.ethereum.request({ method: "eth_chainId" });
       setChainId(cid);
 
       if (walletAddress) {
-        await loadContractData(walletAddress);
-        await checkPohStatus(walletAddress);
+        await Promise.all([
+          loadContractData(walletAddress),
+          checkPohStatus(walletAddress),
+        ]);
       }
 
-      setSuccessMessage("Switched to Linea network.");
+      setSuccessMessage(`Switched to ${TARGET_NETWORK_LABEL}.`);
     } catch (switchError: any) {
       console.error("Error switching network:", switchError);
 
-      // If the chain is not added to MetaMask
       if (switchError?.code === 4902) {
         try {
           await window.ethereum.request({
             method: "wallet_addEthereumChain",
             params: [
               {
-                chainId: "0xe708",
-                chainName: "Linea",
+                chainId: TARGET_CHAIN_ID_HEX,
+                chainName: TARGET_NETWORK_LABEL,
                 nativeCurrency: {
                   name: "Linea ETH",
                   symbol: "ETH",
@@ -202,10 +276,9 @@ export default function Home() {
             ],
           });
 
-          // After adding, try switching again
           await window.ethereum.request({
             method: "wallet_switchEthereumChain",
-            params: [{ chainId: "0xe708" }],
+            params: [{ chainId: TARGET_CHAIN_ID_HEX }],
           });
 
           const cid = await window.ethereum.request({
@@ -214,19 +287,20 @@ export default function Home() {
           setChainId(cid);
 
           if (walletAddress) {
-            await loadContractData(walletAddress);
-            await checkPohStatus(walletAddress);
+            await Promise.all([
+              loadContractData(walletAddress),
+              checkPohStatus(walletAddress),
+            ]);
           }
 
-          setSuccessMessage("Linea network added and switched in your wallet.");
-        } catch (addError: any) {
+          setSuccessMessage(`${TARGET_NETWORK_LABEL} added and selected.`);
+        } catch (addError) {
           console.error("Error adding Linea network:", addError);
           setErrorMessage(
-            "Failed to add Linea network to your wallet. Please add it manually."
+            "Failed to add Linea network. Please add it manually."
           );
         }
       } else if (switchError?.code === 4001) {
-        // User rejected network switch
         setErrorMessage("Network switch was rejected in your wallet.");
       } else {
         setErrorMessage("Failed to switch network in MetaMask.");
@@ -234,224 +308,239 @@ export default function Home() {
     }
   };
 
-  // -------------------------
-  // Load on-chain config + wallet data
-  // -------------------------
-
-  const loadContractData = async (address?: string | null) => {
+  // --------------------------------------------------
+  // Buy flow
+  // --------------------------------------------------
+  const executeBuyTx = async () => {
     try {
-      setIsLoadingData(true);
       setErrorMessage(null);
+      setSuccessMessage(null);
 
-      if (typeof window === "undefined" || !window.ethereum) return;
+      if (typeof window === "undefined" || !window.ethereum) {
+        setErrorMessage("MetaMask not found.");
+        return;
+      }
+      if (!walletAddress) {
+        setErrorMessage("Connect your wallet first.");
+        return;
+      }
+      if (!isOnTargetNetwork) {
+        setErrorMessage(`Please switch your wallet to ${TARGET_NETWORK_LABEL}.`);
+        return;
+      }
+
+      // PoH status must be true (UX check)
+      if (isPohVerified === false) {
+        setErrorMessage(
+          "This wallet is not Proof-of-Humanity verified via Linea."
+        );
+        return;
+      }
+      if (isPohVerified === null) {
+        setErrorMessage("Still checking your PoH status. Try again in a moment.");
+        return;
+      }
+
+      setIsBuying(true);
 
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const signer = provider.getSigner();
       const contract = new ethers.Contract(
-        CONTRACT_ADDRESS,
-        CONTRACT_ABI,
+        TBAG_DAILY_BUYS_ADDRESS,
+        TBAG_DAILY_BUYS_ABI,
         signer
       );
 
-      const [mp, mpt, mpw, ts, ms, t24] = await Promise.all([
-        contract.mintPrice(),
-        contract.maxPerTx(),
-        contract.maxPerWallet(),
-        contract.totalSupply(),
-        contract.maxSupply(),
-        contract.ticketsPer24h(),
-      ]);
-
-      setMintPrice(mp);
-      setMaxPerTx(mpt.toNumber());
-      setMaxPerWallet(mpw.toNumber());
-      setTotalSupply(ts.toNumber());
-      setMaxSupply(ms.toNumber());
-      setTicketsPer24h(t24.toNumber());
-
-      if (address) {
-        try {
-          const wm = await contract.walletMints(address);
-          setWalletMints(wm.toNumber());
-
-          // Also preview free mints for this wallet
-          const free = await contract.previewFreeMints(address);
-          setFreeMintsRemaining(free.toNumber());
-        } catch (inner) {
-          console.warn("Could not load wallet-specific data:", inner);
-        }
+      // Get PoH signature from Linea signer API
+      const sigRes = await fetch(`${POH_SIGNER_API_BASE}/${walletAddress}`);
+      if (!sigRes.ok) {
+        throw new Error(`PoH signer HTTP ${sigRes.status}`);
       }
-    } catch (err: any) {
-      console.error("Error loading contract data:", err);
-      setErrorMessage("Error loading contract data. Check network & contract.");
-    } finally {
-      setIsLoadingData(false);
-    }
-  };
-
-  // -------------------------
-  // Mint
-  // -------------------------
-
-  const handleMint = async () => {
-    setErrorMessage(null);
-    setSuccessMessage(null);
-
-    if (typeof window === "undefined" || !window.ethereum) {
-      setErrorMessage("MetaMask not found.");
-      return;
-    }
-    if (!walletAddress) {
-      setErrorMessage("Connect your wallet first.");
-      return;
-    }
-    if (!isOnLineaMainnet) {
-      setErrorMessage("Please switch your wallet network to Linea");
-      return;
-    }
-    if (!mintPrice) {
-      setErrorMessage("Mint price not loaded yet.");
-      return;
-    }
-    if (quantity < 1) {
-      setErrorMessage("Quantity must be at least 1.");
-      return;
-    }
-    if (maxPerTx > 0 && quantity > maxPerTx) {
-      setErrorMessage(`Max per transaction is ${maxPerTx}.`);
-      return;
-    }
-
-    // Enforce PoH at UX layer
-    if (isPohVerified === false) {
-      setErrorMessage("You need to complete Proof of Humanity before minting.");
-      return;
-    }
-    if (isPohVerified === null) {
-      setErrorMessage(
-        "Still checking your Proof of Humanity status. Please wait a moment and try again."
-      );
-      return;
-    }
-
-    try {
-      setIsMinting(true);
-
-      const provider = new ethers.providers.Web3Provider(window.ethereum);
-      const signer = provider.getSigner();
-      const contract = new ethers.Contract(
-        CONTRACT_ADDRESS,
-        CONTRACT_ABI,
-        signer
-      );
-
-      // Re-check free mints on-chain right before mint, for safety
-      let freeForThisTx = 0;
-      if (freeMintsRemaining !== null) {
-        freeForThisTx = Math.min(quantity, freeMintsRemaining);
-      } else {
-        const free = await contract.previewFreeMints(walletAddress);
-        freeForThisTx = Math.min(quantity, free.toNumber());
+      const rawSig = (await sigRes.text()).trim();
+      if (!rawSig || !rawSig.startsWith("0x")) {
+        throw new Error("Invalid PoH signature format");
       }
+      const pohSignature = rawSig;
 
-      const paidForThisTx = quantity - freeForThisTx;
-      const requiredValue = mintPrice.mul(paidForThisTx);
-
-      // PRE-CHECK: does the wallet have enough ETH for the mint value?
-      if (paidForThisTx > 0) {
-        const balance = await provider.getBalance(walletAddress);
-        if (balance.lt(requiredValue)) {
-          setErrorMessage("You need more ETH");
-          setIsMinting(false);
-          return;
-        }
-      }
-
-      const tx = await contract.mintTickets(quantity, {
-        value: requiredValue,
+      // Gas-only buy (msg.value must be 0)
+      const tx = await contract.buy(pohSignature, {
+        value: 0,
       });
 
       await tx.wait();
 
-      setSuccessMessage("Mint successful!");
-      // Reload contract + wallet data
+      setSuccessMessage("Buy recorded successfully!");
+      setShowConfirmModal(false);
+
       await loadContractData(walletAddress);
     } catch (err: any) {
-      console.error("Mint error:", err);
+      console.error("Buy error:", err);
+      const rawMsg =
+        err?.error?.message ||
+        err?.data?.message ||
+        err?.reason ||
+        err?.message ||
+        String(err ?? "");
+      const lower = rawMsg.toLowerCase();
 
-      if (err?.code === "ACTION_REJECTED") {
-        // User rejected in wallet
+      if (err?.code === "ACTION_REJECTED" || lower.includes("user rejected")) {
         setErrorMessage("Transaction rejected in wallet.");
+      } else if (lower.includes("notpohverified")) {
+        setErrorMessage("This wallet is not PoH verified.");
+      } else if (lower.includes("nonzeroethnotallowed")) {
+        setErrorMessage("This contract is gas-only; do not send ETH with the tx.");
+      } else if (lower.includes("dailylimitreached")) {
+        setErrorMessage("Daily buy limit reached. Try again in the next 24h.");
+      } else if (lower.includes("poh") && lower.includes("verify")) {
+        setErrorMessage(
+          "PoH verification failed. Make sure you completed PoH with this wallet."
+        );
+      } else if (lower.includes("signer http")) {
+        setErrorMessage(
+          "Could not fetch PoH signature from Linea. Please try again in a moment."
+        );
+      } else if (lower.includes("invalid poh signature format")) {
+        setErrorMessage(
+          "Received invalid PoH signature format. Please try again."
+        );
       } else {
-        // Inspect raw error text
-        const rawMsg =
-          err?.error?.message ||
-          err?.data?.message ||
-          err?.reason ||
-          err?.message ||
-          String(err ?? "");
-
-        const lower = rawMsg.toLowerCase();
-
-        if (
-          lower.includes("insufficient funds") || // wallet doesn't have enough for tx + gas
-          lower.includes("insufficient eth") // contract revert: "Insufficient ETH"
-        ) {
-          setErrorMessage("You need more ETH");
-        } else if (
-          lower.includes("24h") ||
-          lower.includes("24 hours") ||
-          lower.includes("daily") ||
-          lower.includes("mint cap")
-        ) {
-          setErrorMessage("Mint cap reached, come back tomorrow.");
-        } else {
-          setErrorMessage(
-            "Mint transaction failed. Check console for details."
-          );
-        }
+        setErrorMessage("Buy transaction failed. Check console for details.");
       }
     } finally {
-      setIsMinting(false);
+      setIsBuying(false);
     }
   };
-
-  // -------------------------
-  // Primary action (button) handler
-  // -------------------------
 
   const handlePrimaryAction = async () => {
     if (!walletAddress) {
       await connectWallet();
       return;
     }
-
-    if (!isOnLineaMainnet) {
-      await switchToLinea();
+    if (!isOnTargetNetwork) {
+      await switchToTargetNetwork();
       return;
     }
-
     if (isPohVerified === false) {
-      // Send user to PoH flow
+      // Send them to PoH portal
       window.open(POH_PORTAL_URL, "_blank");
       return;
     }
-
-    await handleMint();
+    setShowConfirmModal(true);
   };
 
-  // -------------------------
-  // Auto-load when wallet or chain changes
-  // -------------------------
+  // --------------------------------------------------
+  // Claim flow (claimAll)
+  // --------------------------------------------------
+  const handleClaimAll = async () => {
+    try {
+      setErrorMessage(null);
+      setSuccessMessage(null);
 
+      if (typeof window === "undefined" || !window.ethereum) {
+        setErrorMessage("MetaMask not found.");
+        return;
+      }
+      if (!walletAddress) {
+        setErrorMessage("Connect your wallet first.");
+        return;
+      }
+      if (!isOnTargetNetwork) {
+        setErrorMessage(`Please switch your wallet to ${TARGET_NETWORK_LABEL}.`);
+        return;
+      }
+
+      if (!claimableBuys || claimableBuys === 0) {
+        setErrorMessage("No buys to claim yet.");
+        return;
+      }
+
+      setIsClaiming(true);
+
+      const provider = new ethers.providers.Web3Provider(window.ethereum);
+      const signer = provider.getSigner();
+      const contract = new ethers.Contract(
+        TBAG_DAILY_BUYS_ADDRESS,
+        TBAG_DAILY_BUYS_ABI,
+        signer
+      );
+
+      // Optional: preview output with callStatic
+      let expectedBuys = claimableBuys;
+      let expectedTokens = claimableTokens
+        ? claimableTokens.toString()
+        : undefined;
+
+      try {
+        const [buysClaimed, tokensPaid] = await contract.callStatic.claimAll();
+        expectedBuys = buysClaimed.toNumber();
+        expectedTokens = tokensPaid.toString();
+      } catch {
+        // If callStatic fails (e.g. zero balance), we still try and let error bubble.
+      }
+
+      const tx = await contract.claimAll();
+      await tx.wait();
+
+      const formattedTokens =
+        expectedTokens && tbagPerBuy
+          ? ethers.utils.formatUnits(expectedTokens, TBAG_DECIMALS)
+          : null;
+
+      setSuccessMessage(
+        formattedTokens
+          ? `Claimed ${expectedBuys} buys for ~${formattedTokens} TBAG.`
+          : "Claim successful!"
+      );
+
+      await loadContractData(walletAddress);
+    } catch (err: any) {
+      console.error("Claim error:", err);
+      const rawMsg =
+        err?.error?.message ||
+        err?.data?.message ||
+        err?.reason ||
+        err?.message ||
+        String(err ?? "");
+      const lower = rawMsg.toLowerCase();
+
+      if (err?.code === "ACTION_REJECTED" || lower.includes("user rejected")) {
+        setErrorMessage("Claim transaction rejected in wallet.");
+      } else if (lower.includes("nobuystoclaim")) {
+        setErrorMessage("No buys to claim.");
+      } else if (lower.includes("tbagperbuynotset")) {
+        setErrorMessage("tbagPerBuy is not configured on the contract.");
+      } else if (
+        lower.includes("insufficientrewardbalance") ||
+        lower.includes("insufficient balance")
+      ) {
+        setErrorMessage(
+          "Contract does not have enough TBAG to pay this claim."
+        );
+      } else if (lower.includes("transferfailed")) {
+        setErrorMessage(
+          "TBAG transfer failed from contract. Check token balance."
+        );
+      } else {
+        setErrorMessage("Claim transaction failed. Check console for details.");
+      }
+    } finally {
+      setIsClaiming(false);
+    }
+  };
+
+  // --------------------------------------------------
+  // Auto-connect + event listeners
+  // --------------------------------------------------
   useEffect(() => {
     if (typeof window === "undefined" || !window.ethereum) return;
 
     const handleAccountsChanged = (accounts: string[]) => {
       if (accounts.length === 0) {
         setWalletAddress(null);
-        setWalletMints(0);
-        setFreeMintsRemaining(null);
+        setYourTotalBuys(0);
+        setRemainingBuysToday(null);
+        setClaimableBuys(null);
+        setClaimableTokens(null);
         setIsPohVerified(null);
       } else {
         const acc = accounts[0];
@@ -469,7 +558,6 @@ export default function Home() {
       }
     };
 
-    // On load or when autoConnectEnabled changes, check if already connected
     if (autoConnectEnabled) {
       window.ethereum
         .request({ method: "eth_accounts" })
@@ -486,9 +574,7 @@ export default function Home() {
 
     window.ethereum
       .request({ method: "eth_chainId" })
-      .then((cid: string) => {
-        setChainId(cid);
-      })
+      .then((cid: string) => setChainId(cid))
       .catch(console.error);
 
     window.ethereum.on("accountsChanged", handleAccountsChanged);
@@ -499,96 +585,84 @@ export default function Home() {
       window.ethereum.removeListener("accountsChanged", handleAccountsChanged);
       window.ethereum.removeListener("chainChanged", handleChainChanged);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletAddress, autoConnectEnabled]);
 
-  // -------------------------
-  // Derived values
-  // -------------------------
-
-  const formattedMintPrice = mintPrice
-    ? ethers.utils.formatEther(mintPrice)
+  // --------------------------------------------------
+  // Derived labels
+  // --------------------------------------------------
+  const formattedTbagPerBuy = tbagPerBuy
+    ? ethers.utils.formatUnits(tbagPerBuy, TBAG_DECIMALS)
     : "---";
 
-  const freeMintsText =
-    freeMintsRemaining === null
-      ? "Checking free mints..."
-      : `${freeMintsRemaining} remaining (max 8 total)`;
+  const formattedClaimableTokens = claimableTokens
+    ? ethers.utils.formatUnits(claimableTokens, TBAG_DECIMALS)
+    : "0";
 
-  let paidForThisTx = 0;
-  let ethCostForThisTx = "0";
-
-  if (mintPrice) {
-    const freeForThisTx =
-      freeMintsRemaining !== null ? Math.min(quantity, freeMintsRemaining) : 0;
-    paidForThisTx = quantity - freeForThisTx;
-    const requiredValue = mintPrice.mul(paidForThisTx);
-    ethCostForThisTx = ethers.utils.formatEther(requiredValue);
-  }
-
-  const buttonLabel = (() => {
-    if (!walletAddress) return "Connect Wallet";
-    if (!isOnLineaMainnet) return "Switch to Linea";
-    if (isCheckingPoh) return "Checking PoH…";
-    if (isPohVerified === false) return "Click here to verify POH";
-    if (isMinting) return "Minting...";
-    return "Mint Tickets";
+  const remainingBuysText = (() => {
+    if (!walletAddress) return "-";
+    if (maxBuysPerDay === 0) return "0";
+    if (remainingBuysToday === null) return "Loading…";
+    return `${remainingBuysToday} / ${maxBuysPerDay}`;
   })();
 
-  // Disable while busy (but not when PoH is false, so they can click the link)
-  const isPrimaryDisabled = isMinting || isLoadingData || isCheckingPoh;
+  const buyButtonLabel = (() => {
+    if (!walletAddress) return "Connect Wallet";
+    if (!isOnTargetNetwork) return `Switch to ${TARGET_NETWORK_LABEL}`;
+    if (isCheckingPoh) return "Checking PoH…";
+    if (isPohVerified === false) return "Complete PoH Verification";
+    if (isBuying) return "Processing Buy...";
+    return "Record Free Buy";
+  })();
 
-  // PoH label & class
+  const isBuyDisabled =
+    isBuying || isLoadingData || isCheckingPoh || !TBAG_DAILY_BUYS_ADDRESS;
+
+  const claimButtonLabel = (() => {
+    if (!walletAddress) return "Connect Wallet";
+    if (!isOnTargetNetwork) return `Switch to ${TARGET_NETWORK_LABEL}`;
+    if (isClaiming) return "Claiming...";
+    if (claimableBuys !== null && claimableBuys === 0) return "No Buys To Claim";
+    return "Claim All TBAG";
+  })();
+
+  const isClaimDisabled =
+    isClaiming || isLoadingData || !TBAG_DAILY_BUYS_ADDRESS;
+
+  // PoH label
   let pohLabel = "";
   let pohClass = "";
-
   if (isCheckingPoh) {
     pohLabel = "Checking...";
     pohClass = "checking";
   } else if (isPohVerified === true) {
-    pohLabel = "Verified";
+    pohLabel = "Verified (Linea PoH)";
     pohClass = "ok";
   } else if (walletAddress) {
-    pohLabel = "Not verified – required to mint";
+    pohLabel = "Not verified – required to buy";
     pohClass = "bad";
   }
 
-  // -------------------------
-  // Render
-  // -------------------------
-
   return (
-    <div className="page-root">
-      {/* Floating background images */}
-      <div className="bg-logo">
-        <img src="/LogoTrans.png" alt="TBAG Logo" />
-      </div>
-      <div className="bg-img bg-img-1">
-        <img src="/TBAG1trans.png" alt="TBAG 1" />
-      </div>
-      <div className="bg-img bg-img-2">
-        <img src="/TBAG2trans.png" alt="TBAG 2" />
-      </div>
-      <div className="bg-img bg-img-3">
-        <img src="/TBAG3trans.png" alt="TBAG 3" />
-      </div>
-      <div className="bg-img bg-img-4">
-        <img src="/TBAG4trans.png" alt="TBAG 4" />
-      </div>
+    <>
+      <Head>
+        <title>Free Daily $TBAG Buys</title>
+      </Head>
 
-      <div className="card-wrapper">
-        <div className="mint-card">
-          <div className="mint-card-header">
-            <h1>T3 Baggiez Tickets</h1>
-            <p>Secure your Baggiez tickets before they&apos;re gone.</p>
+      <div className="page-root">
+        <div className="card">
+          <div className="card-header">
+            <h1>Free Daily $TBAG Buys</h1>
+            <p>Up to 9 gas-only buys per day, then claim your TBAG.</p>
           </div>
 
+          {/* Status row */}
           <div className="status-row">
             <span
-              className={`status-pill ${isOnLineaMainnet ? "ok" : "bad"}`}
+              className={`status-pill ${isOnTargetNetwork ? "ok" : "bad"}`}
             >
-              {isOnLineaMainnet ? "Linea" : "Wrong Network"}
+              {isOnTargetNetwork ? TARGET_NETWORK_LABEL : "Wrong Network"}
             </span>
-
             <div className="status-right">
               <span className="status-address">
                 {walletAddress
@@ -600,26 +674,26 @@ export default function Home() {
               </span>
               {walletAddress && (
                 <button
-                  className="disconnect-btn"
+                  className="tiny-btn"
                   type="button"
                   onClick={disconnectWallet}
                 >
                   Disconnect
                 </button>
               )}
-              {walletAddress && !isOnLineaMainnet && (
+              {walletAddress && !isOnTargetNetwork && (
                 <button
-                  className="switch-network-btn"
+                  className="tiny-btn"
                   type="button"
-                  onClick={switchToLinea}
+                  onClick={switchToTargetNetwork}
                 >
-                  Switch to Linea
+                  Switch Network
                 </button>
               )}
             </div>
           </div>
 
-          {/* PoH status row */}
+          {/* PoH row */}
           {walletAddress && (
             <div className="poh-row">
               <span className="label">Proof of Humanity</span>
@@ -627,96 +701,112 @@ export default function Home() {
             </div>
           )}
 
-          <div className="info-grid">
-            <div className="info-box">
-              <span className="label">Mint Price</span>
-              <span className="value">{formattedMintPrice} ETH</span>
-            </div>
-            <div className="info-box">
-              <span className="label">Supply</span>
-              <span className="value">
-                {totalSupply} / {maxSupply || 15000}
-              </span>
-            </div>
-            <div className="info-box">
-              <span className="label">Mint Limits</span>
-              <span className="value">
-                {maxPerTx} / tx · {maxPerWallet} / wallet
-              </span>
-            </div>
+          {/* Tabs */}
+          <div className="tabs-row">
+            <button
+              className={`tab-btn ${activeTab === "buy" ? "active" : ""}`}
+              onClick={() => setActiveTab("buy")}
+            >
+              Buy
+            </button>
+            <button
+              className={`tab-btn ${activeTab === "claim" ? "active" : ""}`}
+              onClick={() => setActiveTab("claim")}
+            >
+              Claim
+            </button>
           </div>
 
-          <div className="info-grid">
-            <div className="info-box">
-              <span className="label">24h Limit</span>
-              <span className="value">
-                {ticketsPer24h > 0 ? `${ticketsPer24h} tickets` : "No limit"}
-              </span>
-            </div>
-            <div className="info-box">
-              <span className="label">Your Mints</span>
-              <span className="value">
-                {walletAddress ? `${walletMints} minted` : "-"}
-              </span>
-            </div>
-            <div className="info-box">
-              <span className="label">Free mints</span>
-              <span className="value small">{freeMintsText}</span>
-            </div>
-          </div>
+          {/* BUY TAB */}
+          {activeTab === "buy" && (
+            <>
+              <div className="info-grid">
+                <div className="info-box">
+                  <span className="label">Remaining Buys (24h)</span>
+                  <span className="value">{remainingBuysText}</span>
+                </div>
+                <div className="info-box">
+                  <span className="label">Your Total Buys</span>
+                  <span className="value">
+                    {walletAddress ? yourTotalBuys : "-"}
+                  </span>
+                </div>
+                <div className="info-box">
+                  <span className="label">Total Buys (Global)</span>
+                  <span className="value">
+                    {totalBuysGlobal.toLocaleString()}
+                  </span>
+                </div>
+              </div>
 
-          <div className="mint-controls">
-            <div className="quantity-row">
-              <span className="label">Quantity</span>
-              <div className="quantity-controls">
+              <div className="info-grid single">
+                <div className="info-box">
+                  <span className="label">TBAG Per Buy</span>
+                  <span className="value">
+                    {tbagPerBuy ? `${formattedTbagPerBuy} TBAG` : "---"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="actions-row">
                 <button
-                  onClick={() => setQuantity((q) => Math.max(1, q - 1))}
-                  disabled={quantity <= 1 || isMinting}
+                  className="primary-btn"
+                  onClick={handlePrimaryAction}
+                  disabled={isBuyDisabled}
                 >
-                  -
-                </button>
-                <input
-                  type="number"
-                  min={1}
-                  max={maxPerTx || 2}
-                  value={quantity}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value || "1", 10);
-                    if (isNaN(val)) return;
-                    setQuantity(Math.max(1, Math.min(val, maxPerTx || 2)));
-                  }}
-                />
-                <button
-                  onClick={() =>
-                    setQuantity((q) => {
-                      const next = q + 1;
-                      return maxPerTx ? Math.min(next, maxPerTx) : next;
-                    })
-                  }
-                  disabled={isMinting}
-                >
-                  +
+                  {buyButtonLabel}
                 </button>
               </div>
-            </div>
 
-            <div className="cost-row">
-              <span className="label">ETH for this tx</span>
-              <span className="value">
-                {mintPrice ? `${ethCostForThisTx} ETH` : "---"}
-              </span>
-            </div>
+              <p className="hint">
+                Each buy costs only gas and increases your claimable TBAG by the
+                set amount per buy. PoH is required for buys.
+              </p>
+            </>
+          )}
 
-            <div className="actions-row">
-              <button
-                className="primary-btn"
-                onClick={handlePrimaryAction}
-                disabled={isPrimaryDisabled}
-              >
-                {buttonLabel}
-              </button>
-            </div>
-          </div>
+          {/* CLAIM TAB */}
+          {activeTab === "claim" && (
+            <>
+              <div className="info-grid single">
+                <div className="info-box">
+                  <span className="label">Claimable Buys</span>
+                  <span className="value">
+                    {walletAddress
+                      ? claimableBuys !== null
+                        ? claimableBuys
+                        : "Loading…"
+                      : "-"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="info-grid single">
+                <div className="info-box">
+                  <span className="label">Claimable TBAG</span>
+                  <span className="value">
+                    {walletAddress
+                      ? `${formattedClaimableTokens} TBAG`
+                      : "---"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="actions-row">
+                <button
+                  className="primary-btn"
+                  onClick={handleClaimAll}
+                  disabled={isClaimDisabled}
+                >
+                  {claimButtonLabel}
+                </button>
+              </div>
+
+              <p className="hint">
+                Claim all TBAG owed for your recorded buys in one transaction.
+              </p>
+            </>
+          )}
 
           {errorMessage && <div className="error-box">{errorMessage}</div>}
           {successMessage && (
@@ -724,9 +814,80 @@ export default function Home() {
           )}
 
           {isLoadingData && (
-            <div className="hint-text">Loading contract data from Linea…</div>
+            <div className="hint">Loading contract data from Linea…</div>
           )}
         </div>
+
+        {/* Welcome modal */}
+        {showWelcomeModal && (
+          <div className="modal-backdrop">
+            <div className="modal-card">
+              <h2>Welcome to Free Daily $TBAG Buys</h2>
+              <div className="modal-body">
+                <p>
+                  <strong>How it works:</strong>
+                </p>
+                <ul>
+                  <li>Up to 9 buys per day (gas-only, no ETH payment).</li>
+                  <li>
+                    Each buy gives you a fixed amount of TBAG you can later
+                    claim.
+                  </li>
+                  <li>
+                    You can claim all accumulated TBAG at any time from the
+                    Claim tab.
+                  </li>
+                </ul>
+                <p>
+                  PoH verification is required for buys. Extra rewards for top
+                  users can be handled later via an off-chain leaderboard.
+                </p>
+              </div>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="primary-btn"
+                  onClick={() => setShowWelcomeModal(false)}
+                >
+                  Got it
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Confirm buy modal */}
+        {showConfirmModal && (
+          <div className="modal-backdrop">
+            <div className="modal-card">
+              <h2>Confirm Free Buy</h2>
+              <p className="modal-body">
+                You are about to send a gas-only transaction to record one free
+                $TBAG buy. No ETH is paid to the contract, you only pay gas.
+                Each successful buy increases the TBAG you can later claim from
+                this app.
+              </p>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={() => setShowConfirmModal(false)}
+                  disabled={isBuying}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="primary-btn"
+                  onClick={executeBuyTx}
+                  disabled={isBuying}
+                >
+                  {isBuying ? "Processing..." : "Confirm Buy"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <style jsx>{`
@@ -735,95 +896,67 @@ export default function Home() {
           display: flex;
           align-items: center;
           justify-content: center;
-          background: radial-gradient(circle at top, #1e293b 0, #020617 55%);
+          background: radial-gradient(circle at top, #020617 0, #020617 55%);
           color: #f9fafb;
           padding: 24px;
-          position: relative;
-          overflow: hidden;
-          font-family: var(--font-barlow), system-ui, -apple-system,
-            BlinkMacSystemFont, sans-serif;
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
         }
-
-        .card-wrapper {
-          position: relative;
-          z-index: 2;
-          max-width: 560px;
+        .card {
+          max-width: 540px;
           width: 100%;
-          margin-top: 40px; /* lowered card slightly so logo is more visible */
-        }
-
-        .mint-card {
-          background: radial-gradient(
-            circle at top left,
-            #0f172a 0,
-            #020617 60%
-          );
+          background: radial-gradient(circle at top left, #0f172a 0, #020617 60%);
           border-radius: 24px;
-          padding: 24px 24px 28px;
-          box-shadow: 0 0 60px rgba(129, 140, 248, 0.35),
-            0 0 120px rgba(236, 72, 153, 0.25);
+          padding: 20px 20px 24px;
           border: 1px solid rgba(148, 163, 184, 0.5);
-          backdrop-filter: blur(12px);
+          box-shadow: 0 0 50px rgba(129, 140, 248, 0.45);
         }
-
-        .mint-card-header h1 {
-          font-size: 1.9rem;
+        .card-header h1 {
+          margin: 0;
+          font-size: 1.7rem;
           letter-spacing: 0.08em;
           text-transform: uppercase;
-          margin: 0;
-          font-weight: 500;
         }
-
-        .mint-card-header p {
+        .card-header p {
           margin: 6px 0 0;
           font-size: 0.9rem;
           color: #cbd5f5;
         }
-
         .status-row {
+          margin-top: 16px;
           display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-top: 16px;
-          gap: 8px;
           font-size: 0.8rem;
+          gap: 8px;
         }
-
         .status-pill {
           padding: 4px 10px;
           border-radius: 999px;
+          border: 1px solid rgba(148, 163, 184, 0.6);
           font-size: 0.75rem;
           text-transform: uppercase;
           letter-spacing: 0.08em;
-          border: 1px solid rgba(148, 163, 184, 0.6);
         }
-
         .status-pill.ok {
-          background: rgba(34, 197, 94, 0.12);
+          background: rgba(34, 197, 94, 0.14);
           border-color: rgba(34, 197, 94, 0.8);
           color: #bbf7d0;
         }
-
         .status-pill.bad {
-          background: rgba(248, 113, 113, 0.1);
+          background: rgba(248, 113, 113, 0.12);
           border-color: rgba(248, 113, 113, 0.8);
           color: #fecaca;
         }
-
         .status-right {
           display: flex;
           flex-direction: column;
           align-items: flex-end;
-          gap: 6px;
+          gap: 4px;
         }
-
         .status-address {
           opacity: 0.9;
-          text-align: right;
         }
-
-        .disconnect-btn,
-        .switch-network-btn {
+        .tiny-btn {
           padding: 4px 10px;
           border-radius: 999px;
           border: 1px solid rgba(148, 163, 184, 0.6);
@@ -834,14 +967,9 @@ export default function Home() {
           letter-spacing: 0.08em;
           cursor: pointer;
         }
-
-        .disconnect-btn:hover,
-        .switch-network-btn:hover {
-          background: rgba(30, 64, 175, 0.7);
+        .tiny-btn:hover {
+          background: rgba(37, 99, 235, 0.8);
         }
-
-        /* PoH row */
-
         .poh-row {
           margin-top: 8px;
           display: flex;
@@ -849,63 +977,66 @@ export default function Home() {
           align-items: center;
           font-size: 0.78rem;
         }
-
         .poh-tag {
           padding: 3px 8px;
           border-radius: 999px;
           border: 1px solid rgba(148, 163, 184, 0.6);
         }
-
         .poh-tag.ok {
           background: rgba(34, 197, 94, 0.12);
           border-color: rgba(34, 197, 94, 0.8);
           color: #bbf7d0;
         }
-
         .poh-tag.bad {
-          background: rgba(248, 113, 113, 0.1);
+          background: rgba(248, 113, 113, 0.12);
           border-color: rgba(248, 113, 113, 0.8);
           color: #fecaca;
         }
-
         .poh-tag.checking {
           opacity: 0.9;
         }
-
+        .tabs-row {
+          margin-top: 18px;
+          display: inline-flex;
+          border-radius: 999px;
+          border: 1px solid rgba(148, 163, 184, 0.4);
+          background: rgba(15, 23, 42, 0.9);
+          padding: 3px;
+        }
+        .tab-btn {
+          border: none;
+          background: transparent;
+          color: #e5e7eb;
+          padding: 6px 18px;
+          border-radius: 999px;
+          font-size: 0.8rem;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          cursor: pointer;
+        }
+        .tab-btn.active {
+          background: linear-gradient(135deg, #6366f1, #ec4899);
+          box-shadow: 0 6px 18px rgba(129, 140, 248, 0.9);
+        }
         .info-grid {
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 10px;
-          margin-top: 18px;
+          margin-top: 16px;
         }
-
+        .info-grid.single {
+          grid-template-columns: 1fr;
+        }
         .info-box {
           padding: 10px 12px;
           border-radius: 14px;
           border: 1px solid rgba(148, 163, 184, 0.4);
           background: radial-gradient(
             circle at top left,
-            rgba(79, 70, 229, 0.25),
-            rgba(15, 23, 42, 0.8)
+            rgba(79, 70, 229, 0.3),
+            rgba(15, 23, 42, 0.95)
           );
         }
-
-        .info-box:nth-child(2) {
-          background: radial-gradient(
-            circle at top,
-            rgba(236, 72, 153, 0.25),
-            rgba(15, 23, 42, 0.85)
-          );
-        }
-
-        .info-box:nth-child(3) {
-          background: radial-gradient(
-            circle at top right,
-            rgba(56, 189, 248, 0.25),
-            rgba(15, 23, 42, 0.9)
-          );
-        }
-
         .label {
           display: block;
           font-size: 0.7rem;
@@ -914,98 +1045,52 @@ export default function Home() {
           color: #9ca3af;
           margin-bottom: 2px;
         }
-
         .value {
           font-size: 0.95rem;
           font-weight: 500;
         }
-
-        .value.small {
-          font-size: 0.8rem;
-          line-height: 1.2;
-        }
-
-        .mint-controls {
-          margin-top: 20px;
-          border-top: 1px dashed rgba(148, 163, 184, 0.5);
-          padding-top: 16px;
-        }
-
-        .quantity-row,
-        .cost-row {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 10px;
-          font-size: 0.88rem;
-        }
-
-        .quantity-controls {
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          background: rgba(15, 23, 42, 0.8);
-          border-radius: 999px;
-          border: 1px solid rgba(148, 163, 184, 0.6);
-          padding: 2px;
-        }
-
-        .quantity-controls button {
-          width: 28px;
-          height: 28px;
-          border-radius: 999px;
-          border: none;
-          background: linear-gradient(135deg, #6366f1, #ec4899);
-          color: white;
-          cursor: pointer;
-          font-size: 1rem;
-        }
-
-        .quantity-controls button:disabled {
-          opacity: 0.4;
-          cursor: default;
-        }
-
-        .quantity-controls input {
-          width: 48px;
-          text-align: center;
-          border: none;
-          outline: none;
-          background: transparent;
-          color: #f9fafb;
-          font-size: 0.9rem;
-        }
-
         .actions-row {
-          display: flex;
-          margin-top: 12px;
+          margin-top: 18px;
         }
-
         .primary-btn {
-          flex: 1;
+          width: 100%;
           padding: 10px 14px;
           border-radius: 999px;
           border: none;
           font-size: 0.9rem;
           cursor: pointer;
-          transition: transform 0.12s ease, box-shadow 0.12s ease,
-            opacity 0.12s ease, background 0.12s ease;
-          white-space: nowrap;
           background: linear-gradient(135deg, #6366f1, #ec4899);
           color: white;
-          box-shadow: 0 12px 35px rgba(129, 140, 248, 0.6);
+          box-shadow: 0 12px 30px rgba(129, 140, 248, 0.7);
+          transition: transform 0.12s ease, box-shadow 0.12s ease,
+            opacity 0.12s ease;
         }
-
         .primary-btn:hover:not(:disabled) {
           transform: translateY(-1px);
-          box-shadow: 0 14px 40px rgba(129, 140, 248, 0.9);
+          box-shadow: 0 16px 40px rgba(129, 140, 248, 0.95);
         }
-
         .primary-btn:disabled {
           opacity: 0.5;
           cursor: default;
         }
-
+        .secondary-btn {
+          padding: 8px 14px;
+          border-radius: 999px;
+          border: 1px solid rgba(148, 163, 184, 0.6);
+          background: rgba(15, 23, 42, 0.95);
+          color: #e5e7eb;
+          font-size: 0.85rem;
+          cursor: pointer;
+          margin-right: 8px;
+        }
+        .secondary-btn:hover:not(:disabled) {
+          background: rgba(37, 99, 235, 0.8);
+        }
+        .hint {
+          margin-top: 10px;
+          font-size: 0.75rem;
+          color: #9ca3af;
+        }
         .error-box {
           margin-top: 12px;
           padding: 8px 10px;
@@ -1015,7 +1100,6 @@ export default function Home() {
           font-size: 0.8rem;
           color: #fecaca;
         }
-
         .success-box {
           margin-top: 12px;
           padding: 8px 10px;
@@ -1026,144 +1110,62 @@ export default function Home() {
           color: #bbf7d0;
         }
 
-        .hint-text {
-          margin-top: 10px;
-          font-size: 0.75rem;
-          color: #9ca3af;
+        /* Modals */
+        .modal-backdrop {
+          position: fixed;
+          inset: 0;
+          background: rgba(15, 23, 42, 0.85);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 20;
         }
-
-        /* Background images */
-
-        .bg-logo {
-          position: absolute;
-          top: -4%; /* moved logo further up */
-          left: 50%;
-          transform: translateX(-50%);
-          opacity: 0.18;
-          pointer-events: none;
-          z-index: 0;
-          animation: floatLogo 10s ease-in-out infinite alternate;
+        .modal-card {
+          max-width: 420px;
+          width: 100%;
+          background: radial-gradient(
+            circle at top left,
+            #020617 0,
+            #020617 60%
+          );
+          border-radius: 20px;
+          border: 1px solid rgba(148, 163, 184, 0.7);
+          box-shadow: 0 0 40px rgba(129, 140, 248, 0.7);
+          padding: 18px 18px 16px;
         }
-
-        .bg-logo img {
-          max-width: 350px; /* ~25% larger than before */
-          height: auto;
+        .modal-card h2 {
+          margin: 0 0 8px;
+          font-size: 1.15rem;
         }
-
-        .bg-img {
-          position: absolute;
-          opacity: 0.26;
-          pointer-events: none;
-          z-index: 0;
-          animation-duration: 12s;
-          animation-iteration-count: infinite;
-          animation-timing-function: ease-in-out;
+        .modal-body {
+          font-size: 0.78rem;
+          color: #cbd5f5;
         }
-
-        .bg-img img {
-          max-width: 340px;
-          height: auto;
+        .modal-body ul {
+          margin: 6px 0 10px;
+          padding-left: 1.2rem;
         }
-
-        .bg-img-1 {
-          top: 10%;
-          left: 5%;
-          animation-name: float1;
+        .modal-body li {
+          margin-bottom: 4px;
         }
-
-        .bg-img-2 {
-          bottom: 6%;
-          left: 7%;
-          animation-name: float2;
-        }
-
-        .bg-img-3 {
-          top: 12%;
-          right: 6%;
-          animation-name: float3;
-        }
-
-        .bg-img-4 {
-          bottom: 4%;
-          right: 7%;
-          animation-name: float4;
-        }
-
-        @keyframes floatLogo {
-          0% {
-            transform: translate(-50%, 0px) scale(1);
-          }
-          100% {
-            transform: translate(-50%, -6px) scale(1.06);
-          }
-        }
-
-        @keyframes float1 {
-          0% {
-            transform: translate(0px, 0px) rotate(-2deg) scale(1);
-          }
-          50% {
-            transform: translate(10px, -6px) rotate(-4deg) scale(1.25);
-          }
-          100% {
-            transform: translate(-4px, 4px) rotate(-3deg) scale(1.12);
-          }
-        }
-
-        @keyframes float2 {
-          0% {
-            transform: translate(0px, 0px) rotate(2deg) scale(1.05);
-          }
-          50% {
-            transform: translate(-12px, -10px) rotate(4deg) scale(1.25);
-          }
-          100% {
-            transform: translate(8px, 6px) rotate(3deg) scale(1.08);
-          }
-        }
-
-        @keyframes float3 {
-          0% {
-            transform: translate(0px, 0px) rotate(3deg) scale(0.78);
-          }
-          50% {
-            transform: translate(-14px, 8px) rotate(5deg) scale(1.05);
-          }
-          100% {
-            transform: translate(6px, -4px) rotate(4deg) scale(0.9);
-          }
-        }
-
-        @keyframes float4 {
-          0% {
-            transform: translate(0px, 0px) rotate(-3deg) scale(1);
-          }
-          50% {
-            transform: translate(12px, 10px) rotate(-5deg) scale(1.25);
-          }
-          100% {
-            transform: translate(-6px, -6px) rotate(-4deg) scale(1.1);
-          }
+        .modal-actions {
+          margin-top: 14px;
+          display: flex;
+          justify-content: flex-end;
         }
 
         @media (max-width: 640px) {
-          .mint-card {
-            padding: 18px 16px 22px;
+          .card {
+            padding: 18px 14px 22px;
           }
-          .mint-card-header h1 {
-            font-size: 1.5rem;
+          .card-header h1 {
+            font-size: 1.45rem;
           }
           .info-grid {
             grid-template-columns: 1fr;
           }
-          .bg-logo img {
-            max-width: 275px; /* also scale up on mobile */
-          }
-          .bg-img img {
-            max-width: 240px;
-          }
         }
       `}</style>
-    </div>
+    </>
   );
 }
