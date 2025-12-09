@@ -47,6 +47,14 @@ declare global {
   }
 }
 
+// Leaderboard row type (same shape as Double Bagz app)
+type LeaderboardRow = {
+  wallet: string;
+  totalBuys: number;
+  bonusPercent: number;
+  bonusValueUsd: number;
+};
+
 export default function Home() {
   // --------------------------------------------------
   // Wallet / network
@@ -95,6 +103,13 @@ export default function Home() {
   // PoH
   const [isPohVerified, setIsPohVerified] = useState<boolean | null>(null);
   const [isCheckingPoh, setIsCheckingPoh] = useState(false);
+
+  // --------------------------------------------------
+  // Leaderboard state (same logic as Double Bagz)
+  // --------------------------------------------------
+  const [leaderboardRows, setLeaderboardRows] = useState<LeaderboardRow[]>([]);
+  const [isLoadingLeaderboard, setIsLoadingLeaderboard] = useState(false);
+  const [leaderboardError, setLeaderboardError] = useState<string | null>(null);
 
   // --------------------------------------------------
   // Helpers: PoH status (UX only)
@@ -589,6 +604,35 @@ export default function Home() {
   }, [walletAddress, autoConnectEnabled]);
 
   // --------------------------------------------------
+  // Fetch leaderboard from API
+  // --------------------------------------------------
+  useEffect(() => {
+    const fetchLeaderboard = async () => {
+      try {
+        setIsLoadingLeaderboard(true);
+        setLeaderboardError(null);
+
+        const res = await fetch("/api/leaderboard");
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        const rows: LeaderboardRow[] = data.rows || [];
+        setLeaderboardRows(rows);
+      } catch (err: any) {
+        console.error("Fetch leaderboard error:", err);
+        setLeaderboardError("Could not load leaderboard.");
+      } finally {
+        setIsLoadingLeaderboard(false);
+      }
+    };
+
+    fetchLeaderboard();
+  }, []);
+
+  // --------------------------------------------------
   // Derived labels
   // --------------------------------------------------
   const formattedTbagPerBuy = tbagPerBuy
@@ -642,6 +686,16 @@ export default function Home() {
     pohLabel = "Not verified – required to buy";
     pohClass = "bad";
   }
+
+  // Your rank in leaderboard
+  const yourRank = (() => {
+    if (!walletAddress || leaderboardRows.length === 0) return null;
+    const idx = leaderboardRows.findIndex(
+      (row) => row.wallet.toLowerCase() === walletAddress.toLowerCase()
+    );
+    if (idx === -1) return null;
+    return idx + 1;
+  })();
 
   return (
     <>
@@ -816,6 +870,81 @@ export default function Home() {
           {isLoadingData && (
             <div className="hint">Loading contract data from Linea…</div>
           )}
+
+          {/* Leaderboard section (same logic as Double Bagz) */}
+          <div className="leaderboard-section">
+            <div className="leaderboard-header">
+              <div>
+                <span className="label">Leaderboard</span>
+                <span className="leaderboard-subtext">
+                  Extra rewards for the top degens 🏆
+                </span>
+              </div>
+              <div className="rank-pill-wrapper">
+                <span className="label">Your Rank</span>
+                <span className="rank-pill">
+                  {yourRank ? `#${yourRank}` : "--"}
+                </span>
+              </div>
+            </div>
+
+            {isLoadingLeaderboard && (
+              <div className="hint">Loading leaderboard…</div>
+            )}
+
+            {leaderboardError && (
+              <div className="error-box">{leaderboardError}</div>
+            )}
+
+            {!isLoadingLeaderboard && !leaderboardError && (
+              <div className="leaderboard-table-wrapper">
+                <table className="leaderboard-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Wallet</th>
+                      <th>Buys</th>
+                      <th>Bonus %</th>
+                      <th>Bonus Value (USD)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {leaderboardRows.length === 0 && (
+                      <tr>
+                        <td
+                          colSpan={5}
+                          style={{ textAlign: "center", padding: "8px" }}
+                        >
+                          No buys yet.
+                        </td>
+                      </tr>
+                    )}
+                    {leaderboardRows.map((row, index) => {
+                      const isSelf =
+                        walletAddress &&
+                        row.wallet.toLowerCase() ===
+                          walletAddress.toLowerCase();
+                      return (
+                        <tr
+                          key={row.wallet}
+                          className={isSelf ? "self-row" : ""}
+                        >
+                          <td>{index + 1}</td>
+                          <td>
+                            {row.wallet.slice(0, 6)}...
+                            {row.wallet.slice(-4)}
+                          </td>
+                          <td>{row.totalBuys}</td>
+                          <td>{row.bonusPercent}%</td>
+                          <td>${row.bonusValueUsd.toFixed(2)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Welcome modal */}
@@ -830,14 +959,17 @@ export default function Home() {
                 <ul>
                   <li>Up to 9 "buys" per day (gas-only, no ETH payment).</li>
                   <li>
-                    Each "buy" gives you a fixed amount of $TBAG tokens you can claim straight away.
+                    Each "buy" gives you a fixed amount of $TBAG tokens you can
+                    claim straight away.
                   </li>
                   <li>
-                    After you "buy", click the claims tab to actually claim your $TBAG Tokens
+                    After you "buy", click the claims tab to actually claim your
+                    $TBAG Tokens
                   </li>
                 </ul>
                 <p>
-                  PoH verification is required for "buys". Extra rewards for top wallets on the leaderboard
+                  PoH verification is required for "buys". Extra rewards for top
+                  wallets on the leaderboard
                 </p>
               </div>
               <div className="modal-actions">
@@ -860,8 +992,9 @@ export default function Home() {
               <h2>Confirm Free "Buy"</h2>
               <p className="modal-body">
                 You are about to send a gas-only transaction to record one free
-                $TBAG "buy". No ETH is paid to the contract, you only pay the $0.01 gas fee.
-                Each "buy" increases your total $TBAG claim each day.
+                $TBAG "buy". No ETH is paid to the contract, you only pay the
+                $0.01 gas fee. Each "buy" increases your total $TBAG claim each
+                day.
               </p>
               <div className="modal-actions">
                 <button
@@ -1106,6 +1239,92 @@ export default function Home() {
           color: #bbf7d0;
         }
 
+        /* Leaderboard styles */
+        .leaderboard-section {
+          margin-top: 18px;
+          padding-top: 14px;
+          border-top: 1px dashed rgba(148, 163, 184, 0.5);
+        }
+        .leaderboard-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: 8px;
+          margin-bottom: 8px;
+        }
+        .leaderboard-subtext {
+          display: block;
+          font-size: 0.7rem;
+          color: #9ca3af;
+          margin-top: 2px;
+        }
+        .rank-pill-wrapper {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 4px;
+        }
+        .rank-pill {
+          padding: 4px 10px;
+          border-radius: 999px;
+          border: 1px solid rgba(148, 163, 184, 0.7);
+          background: radial-gradient(
+            circle at top left,
+            rgba(79, 70, 229, 0.45),
+            rgba(15, 23, 42, 0.95)
+          );
+          font-size: 0.8rem;
+          font-weight: 500;
+          min-width: 52px;
+          text-align: center;
+        }
+        .leaderboard-table-wrapper {
+          max-height: 210px;
+          overflow-y: auto;
+          border-radius: 12px;
+          border: 1px solid rgba(148, 163, 184, 0.4);
+          background: rgba(15, 23, 42, 0.9);
+        }
+        .leaderboard-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 0.78rem;
+        }
+        .leaderboard-table thead {
+          position: sticky;
+          top: 0;
+          background: rgba(15, 23, 42, 0.98);
+          z-index: 1;
+        }
+        .leaderboard-table th,
+        .leaderboard-table td {
+          padding: 6px 8px;
+          text-align: left;
+          border-bottom: 1px solid rgba(30, 64, 175, 0.35);
+        }
+        .leaderboard-table th {
+          font-weight: 500;
+          color: #9ca3af;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          font-size: 0.7rem;
+        }
+        .leaderboard-table tr:nth-child(even) td {
+          background: rgba(15, 23, 42, 0.85);
+        }
+        .leaderboard-table tr:nth-child(odd) td {
+          background: rgba(15, 23, 42, 0.95);
+        }
+        .leaderboard-table tr.self-row td {
+          background: radial-gradient(
+            circle at top left,
+            rgba(129, 140, 248, 0.6),
+            rgba(15, 23, 42, 0.98)
+          );
+          border-bottom-color: rgba(129, 140, 248, 0.95);
+          box-shadow: 0 0 18px rgba(129, 140, 248, 0.7);
+        }
+
         /* Modals */
         .modal-backdrop {
           position: fixed;
@@ -1159,6 +1378,13 @@ export default function Home() {
           }
           .info-grid {
             grid-template-columns: 1fr;
+          }
+          .leaderboard-header {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+          .rank-pill-wrapper {
+            align-items: flex-start;
           }
         }
       `}</style>
