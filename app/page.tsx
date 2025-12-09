@@ -652,8 +652,8 @@ export default function Home() {
       <div className="page-root">
         <div className="card">
           <div className="card-header">
-            <h1>Free Daily $TBAG Buys</h1>
-            <p>Up to 9 gas-only buys per day, then claim your TBAG.</p>
+            <h1>Grab yer Bagz</h1>
+            <p>Claim $TBAG up to 9 times a day. Secure the bag</p>
           </div>
 
           {/* Status row */}
@@ -822,25 +822,22 @@ export default function Home() {
         {showWelcomeModal && (
           <div className="modal-backdrop">
             <div className="modal-card">
-              <h2>Welcome to Free Daily $TBAG Buys</h2>
+              <h2>Time to "Grab yer daily Bagz"</h2>
               <div className="modal-body">
                 <p>
                   <strong>How it works:</strong>
                 </p>
                 <ul>
-                  <li>Up to 9 buys per day (gas-only, no ETH payment).</li>
+                  <li>Up to 9 "buys" per day (gas-only, no ETH payment).</li>
                   <li>
-                    Each buy gives you a fixed amount of TBAG you can later
-                    claim.
+                    Each "buy" gives you a fixed amount of $TBAG tokens you can claim straight away.
                   </li>
                   <li>
-                    You can claim all accumulated TBAG at any time from the
-                    Claim tab.
+                    After you "buy", click the claims tab to actually claim your $TBAG Tokens
                   </li>
                 </ul>
                 <p>
-                  PoH verification is required for buys. Extra rewards for top
-                  users can be handled later via an off-chain leaderboard.
+                  PoH verification is required for "buys". Extra rewards for top wallets on the leaderboard
                 </p>
               </div>
               <div className="modal-actions">
@@ -860,12 +857,11 @@ export default function Home() {
         {showConfirmModal && (
           <div className="modal-backdrop">
             <div className="modal-card">
-              <h2>Confirm Free Buy</h2>
+              <h2>Confirm Free "Buy"</h2>
               <p className="modal-body">
                 You are about to send a gas-only transaction to record one free
-                $TBAG buy. No ETH is paid to the contract, you only pay gas.
-                Each successful buy increases the TBAG you can later claim from
-                this app.
+                $TBAG "buy". No ETH is paid to the contract, you only pay the $0.01 gas fee.
+                Each "buy" increases your total $TBAG claim each day.
               </p>
               <div className="modal-actions">
                 <button
