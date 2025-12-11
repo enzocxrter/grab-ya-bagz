@@ -786,20 +786,34 @@ export default function Home() {
           )}
 
           {/* Tabs */}
-          <div className="tabs-row">
-            <button
-              className={`tab-btn ${activeTab === "buy" ? "active" : ""}`}
-              onClick={() => setActiveTab("buy")}
-            >
-              Buy
-            </button>
-            <button
-              className={`tab-btn ${activeTab === "claim" ? "active" : ""}`}
-              onClick={() => setActiveTab("claim")}
-            >
-              Claim
-            </button>
-          </div>
+          {/* Tabs + Your Rank */}
+<div className="tab-header-row">
+    <button
+      className={`tab-btn ${activeTab === "buy" ? "active" : ""}`}
+      onClick={() => setActiveTab("buy")}
+    >
+      Buy
+    </button>
+    <button
+      className={`tab-btn ${activeTab === "claim" ? "active" : ""}`}
+      onClick={() => setActiveTab("claim")}
+    >
+      Claim
+    </button>
+  </div>
+
+  <div className="rank-pill-wrapper">
+    <span className="label">Your Rank</span>
+    <span className="rank-pill">
+      {yourRank
+        ? `#${yourRank}`
+        : walletAddress
+        ? "--"
+        : "Connect to see"}
+    </span>
+  </div>
+</div>
+
 
           {/* BUY TAB */}
           {activeTab === "buy" && (
@@ -963,18 +977,6 @@ export default function Home() {
               </table>
             </div>
           )}
-
-          <div className="leaderboard-footer">
-            <span className="label">Your Rank</span>
-            <span className="value">
-              {yourRank
-                ? `#${yourRank}`
-                : walletAddress
-                ? "--"
-                : "Connect to see"}
-            </span>
-          </div>
-        </div>
 
         {/* Welcome modal */}
         {showWelcomeModal && (
@@ -1155,8 +1157,16 @@ export default function Home() {
         .poh-tag.checking {
           opacity: 0.9;
         }
-        .tabs-row {
+
+        /* Tabs + Rank row */
+        .tab-header-row {
           margin-top: 18px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 12px;
+        }
+        .tabs-row {
           display: inline-flex;
           border-radius: 999px;
           border: 1px solid rgba(148, 163, 184, 0.4);
@@ -1178,6 +1188,27 @@ export default function Home() {
           background: linear-gradient(135deg, #6366f1, #ec4899);
           box-shadow: 0 6px 18px rgba(129, 140, 248, 0.9);
         }
+        .rank-pill-wrapper {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 4px;
+        }
+        .rank-pill {
+          padding: 4px 10px;
+          border-radius: 999px;
+          border: 1px solid rgba(148, 163, 184, 0.7);
+          background: radial-gradient(
+            circle at top left,
+            rgba(79, 70, 229, 0.5),
+            rgba(15, 23, 42, 0.9)
+          );
+          font-size: 0.8rem;
+          font-weight: 500;
+          min-width: 48px;
+          text-align: center;
+        }
+
         .info-grid {
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1399,8 +1430,13 @@ export default function Home() {
           .leaderboard-card {
             padding: 14px 12px 16px;
           }
+          .tab-header-row {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+          .rank-pill-wrapper {
+            align-items: flex-start;
+          }
         }
       `}</style>
-    </>
-  );
-}
+
