@@ -785,35 +785,33 @@ export default function Home() {
             </div>
           )}
 
-          {/* Tabs */}
           {/* Tabs + Your Rank */}
-<div className="tab-header-row">
-    <button
-      className={`tab-btn ${activeTab === "buy" ? "active" : ""}`}
-      onClick={() => setActiveTab("buy")}
-    >
-      Buy
-    </button>
-    <button
-      className={`tab-btn ${activeTab === "claim" ? "active" : ""}`}
-      onClick={() => setActiveTab("claim")}
-    >
-      Claim
-    </button>
-  </div>
-
-  <div className="rank-pill-wrapper">
-    <span className="label">Your Rank</span>
-    <span className="rank-pill">
-      {yourRank
-        ? `#${yourRank}`
-        : walletAddress
-        ? "--"
-        : "Connect to see"}
-    </span>
-  </div>
-</div>
-
+          <div className="tab-header-row">
+            <div className="tabs-row">
+              <button
+                className={`tab-btn ${activeTab === "buy" ? "active" : ""}`}
+                onClick={() => setActiveTab("buy")}
+              >
+                Buy
+              </button>
+              <button
+                className={`tab-btn ${activeTab === "claim" ? "active" : ""}`}
+                onClick={() => setActiveTab("claim")}
+              >
+                Claim
+              </button>
+            </div>
+            <div className="rank-pill-wrapper">
+              <span className="label">Your Rank</span>
+              <span className="rank-pill">
+                {yourRank
+                  ? `#${yourRank}`
+                  : walletAddress
+                  ? "--"
+                  : "Connect to see"}
+              </span>
+            </div>
+          </div>
 
           {/* BUY TAB */}
           {activeTab === "buy" && (
@@ -977,6 +975,7 @@ export default function Home() {
               </table>
             </div>
           )}
+        </div>
 
         {/* Welcome modal */}
         {showWelcomeModal && (
@@ -1439,4 +1438,6 @@ export default function Home() {
           }
         }
       `}</style>
-
+    </>
+  );
+}
