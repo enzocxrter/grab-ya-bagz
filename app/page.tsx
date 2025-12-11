@@ -40,6 +40,12 @@ const TBAG_DAILY_BUYS_ABI = [
   "function claimAll() returns (uint256 buysClaimed, uint256 tokensPaid)",
 ];
 
+// Leaderboard config (logs-based)
+const LEADERBOARD_MAX_ENTRIES = 20;
+// Optional: set this to the deploy block of TbagDailyFreeBuys to speed things up
+const LEADERBOARD_FROM_BLOCK = 0;
+const LINEA_RPC_URL = "https://rpc.linea.build";
+
 // Allow window.ethereum
 declare global {
   interface Window {
@@ -47,12 +53,9 @@ declare global {
   }
 }
 
-// Leaderboard row type (same shape as Double Bagz app)
 type LeaderboardRow = {
   wallet: string;
   totalBuys: number;
-  bonusPercent: number;
-  bonusValueUsd: number;
 };
 
 export default function Home() {
@@ -104,9 +107,7 @@ export default function Home() {
   const [isPohVerified, setIsPohVerified] = useState<boolean | null>(null);
   const [isCheckingPoh, setIsCheckingPoh] = useState(false);
 
-  // --------------------------------------------------
-  // Leaderboard state (same logic as Double Bagz)
-  // --------------------------------------------------
+  // Leaderboard
   const [leaderboardRows, setLeaderboardRows] = useState<LeaderboardRow[]>([]);
   const [isLoadingLeaderboard, setIsLoadingLeaderboard] = useState(false);
   const [leaderboardError, setLeaderboardError] = useState<string | null>(null);
@@ -192,6 +193,53 @@ export default function Home() {
       );
     } finally {
       setIsLoadingData(false);
+    }
+  };
+
+  // --------------------------------------------------
+  // Leaderboard: read logs from Linea RPC
+  // --------------------------------------------------
+  const loadLeaderboardFromChain = async () => {
+    try {
+      setIsLoadingLeaderboard(true);
+      setLeaderboardError(null);
+
+      // Read-only provider, no wallet required
+      const provider = new ethers.providers.JsonRpcProvider(LINEA_RPC_URL);
+
+      const logs = await provider.getLogs({
+        address: TBAG_DAILY_BUYS_ADDRESS,
+        fromBlock: LEADERBOARD_FROM_BLOCK,
+        toBlock: "latest",
+      });
+
+      const counts = new Map<string, number>();
+
+      for (const log of logs) {
+        if (!log.topics || log.topics.length < 2) continue;
+        const topic = log.topics[1];
+        if (!topic || topic.length !== 66) continue;
+
+        try {
+          // Interpret topic[1] as the indexed buyer address
+          const addr = ethers.utils.getAddress("0x" + topic.slice(26));
+          counts.set(addr, (counts.get(addr) ?? 0) + 1);
+        } catch {
+          // ignore logs that don't decode cleanly into an address
+        }
+      }
+
+      const rows: LeaderboardRow[] = Array.from(counts.entries())
+        .map(([wallet, totalBuys]) => ({ wallet, totalBuys }))
+        .sort((a, b) => b.totalBuys - a.totalBuys)
+        .slice(0, LEADERBOARD_MAX_ENTRIES);
+
+      setLeaderboardRows(rows);
+    } catch (err) {
+      console.error("Error loading leaderboard:", err);
+      setLeaderboardError("Could not load leaderboard.");
+    } finally {
+      setIsLoadingLeaderboard(false);
     }
   };
 
@@ -387,7 +435,10 @@ export default function Home() {
       setSuccessMessage("Buy recorded successfully!");
       setShowConfirmModal(false);
 
-      await loadContractData(walletAddress);
+      await Promise.all([
+        loadContractData(walletAddress),
+        loadLeaderboardFromChain(),
+      ]);
     } catch (err: any) {
       console.error("Buy error:", err);
       const rawMsg =
@@ -604,32 +655,11 @@ export default function Home() {
   }, [walletAddress, autoConnectEnabled]);
 
   // --------------------------------------------------
-  // Fetch leaderboard from API
+  // Initial leaderboard load
   // --------------------------------------------------
   useEffect(() => {
-    const fetchLeaderboard = async () => {
-      try {
-        setIsLoadingLeaderboard(true);
-        setLeaderboardError(null);
-
-        const res = await fetch("/api/leaderboard");
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(text || `HTTP ${res.status}`);
-        }
-
-        const data = await res.json();
-        const rows: LeaderboardRow[] = data.rows || [];
-        setLeaderboardRows(rows);
-      } catch (err: any) {
-        console.error("Fetch leaderboard error:", err);
-        setLeaderboardError("Could not load leaderboard.");
-      } finally {
-        setIsLoadingLeaderboard(false);
-      }
-    };
-
-    fetchLeaderboard();
+    loadLeaderboardFromChain().catch(console.error);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // --------------------------------------------------
@@ -870,80 +900,79 @@ export default function Home() {
           {isLoadingData && (
             <div className="hint">Loading contract data from Linea…</div>
           )}
+        </div>
 
-          {/* Leaderboard section (same logic as Double Bagz) */}
-          <div className="leaderboard-section">
-            <div className="leaderboard-header">
-              <div>
-                <span className="label">Leaderboard</span>
-                <span className="leaderboard-subtext">
-                  Extra rewards for the top degens 🏆
-                </span>
-              </div>
-              <div className="rank-pill-wrapper">
-                <span className="label">Your Rank</span>
-                <span className="rank-pill">
-                  {yourRank ? `#${yourRank}` : "--"}
-                </span>
-              </div>
-            </div>
+        {/* Leaderboard card */}
+        <div className="leaderboard-card">
+          <div className="leaderboard-header">
+            <span className="label">Leaderboard</span>
+            <span className="leaderboard-sub">
+              Wallets ranked by total free buys
+            </span>
+          </div>
 
-            {isLoadingLeaderboard && (
-              <div className="hint">Loading leaderboard…</div>
-            )}
+          {isLoadingLeaderboard && (
+            <div className="hint">Loading leaderboard…</div>
+          )}
 
-            {leaderboardError && (
-              <div className="error-box">{leaderboardError}</div>
-            )}
+          {leaderboardError && (
+            <div className="error-box">{leaderboardError}</div>
+          )}
 
-            {!isLoadingLeaderboard && !leaderboardError && (
-              <div className="leaderboard-table-wrapper">
-                <table className="leaderboard-table">
-                  <thead>
+          {!isLoadingLeaderboard && !leaderboardError && (
+            <div className="leaderboard-table-wrapper">
+              <table className="leaderboard-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Wallet</th>
+                    <th>Free Buys</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {leaderboardRows.length === 0 && (
                     <tr>
-                      <th>#</th>
-                      <th>Wallet</th>
-                      <th>Buys</th>
-                      <th>Bonus %</th>
-                      <th>Bonus Value (USD)</th>
+                      <td
+                        colSpan={3}
+                        style={{ textAlign: "center", padding: "8px" }}
+                      >
+                        No buys yet. Be the first to grab a bag.
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {leaderboardRows.length === 0 && (
-                      <tr>
-                        <td
-                          colSpan={5}
-                          style={{ textAlign: "center", padding: "8px" }}
-                        >
-                          No buys yet.
+                  )}
+                  {leaderboardRows.map((row, index) => {
+                    const isSelf =
+                      walletAddress &&
+                      row.wallet.toLowerCase() ===
+                        walletAddress.toLowerCase();
+                    return (
+                      <tr
+                        key={row.wallet}
+                        className={isSelf ? "leaderboard-row-self" : ""}
+                      >
+                        <td>{index + 1}</td>
+                        <td>
+                          {row.wallet.slice(0, 6)}...
+                          {row.wallet.slice(-4)}
                         </td>
+                        <td>{row.totalBuys}</td>
                       </tr>
-                    )}
-                    {leaderboardRows.map((row, index) => {
-                      const isSelf =
-                        walletAddress &&
-                        row.wallet.toLowerCase() ===
-                          walletAddress.toLowerCase();
-                      return (
-                        <tr
-                          key={row.wallet}
-                          className={isSelf ? "self-row" : ""}
-                        >
-                          <td>{index + 1}</td>
-                          <td>
-                            {row.wallet.slice(0, 6)}...
-                            {row.wallet.slice(-4)}
-                          </td>
-                          <td>{row.totalBuys}</td>
-                          <td>{row.bonusPercent}%</td>
-                          <td>${row.bonusValueUsd.toFixed(2)}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="leaderboard-footer">
+            <span className="label">Your Rank</span>
+            <span className="value">
+              {yourRank
+                ? `#${yourRank}`
+                : walletAddress
+                ? "--"
+                : "Connect to see"}
+            </span>
           </div>
         </div>
 
@@ -1023,12 +1052,14 @@ export default function Home() {
         .page-root {
           min-height: 100vh;
           display: flex;
+          flex-direction: column;
           align-items: center;
           justify-content: center;
           background: radial-gradient(circle at top, #020617 0, #020617 55%);
           color: #f9fafb;
           padding: 24px;
           font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+          gap: 16px;
         }
         .card {
           max-width: 540px;
@@ -1239,68 +1270,47 @@ export default function Home() {
           color: #bbf7d0;
         }
 
-        /* Leaderboard styles */
-        .leaderboard-section {
-          margin-top: 18px;
-          padding-top: 14px;
-          border-top: 1px dashed rgba(148, 163, 184, 0.5);
+        /* Leaderboard */
+        .leaderboard-card {
+          max-width: 540px;
+          width: 100%;
+          background: radial-gradient(
+            circle at top left,
+            #020617 0,
+            #020617 60%
+          );
+          border-radius: 20px;
+          border: 1px solid rgba(148, 163, 184, 0.7);
+          box-shadow: 0 0 35px rgba(129, 140, 248, 0.4);
+          padding: 14px 16px 16px;
         }
         .leaderboard-header {
           display: flex;
           justify-content: space-between;
-          align-items: flex-start;
-          gap: 8px;
+          align-items: baseline;
           margin-bottom: 8px;
         }
-        .leaderboard-subtext {
-          display: block;
+        .leaderboard-sub {
           font-size: 0.7rem;
           color: #9ca3af;
-          margin-top: 2px;
-        }
-        .rank-pill-wrapper {
-          display: flex;
-          flex-direction: column;
-          align-items: flex-end;
-          gap: 4px;
-        }
-        .rank-pill {
-          padding: 4px 10px;
-          border-radius: 999px;
-          border: 1px solid rgba(148, 163, 184, 0.7);
-          background: radial-gradient(
-            circle at top left,
-            rgba(79, 70, 229, 0.45),
-            rgba(15, 23, 42, 0.95)
-          );
-          font-size: 0.8rem;
-          font-weight: 500;
-          min-width: 52px;
-          text-align: center;
         }
         .leaderboard-table-wrapper {
-          max-height: 210px;
+          max-height: 220px;
           overflow-y: auto;
           border-radius: 12px;
           border: 1px solid rgba(148, 163, 184, 0.4);
-          background: rgba(15, 23, 42, 0.9);
+          background: rgba(15, 23, 42, 0.85);
         }
         .leaderboard-table {
           width: 100%;
           border-collapse: collapse;
-          font-size: 0.78rem;
-        }
-        .leaderboard-table thead {
-          position: sticky;
-          top: 0;
-          background: rgba(15, 23, 42, 0.98);
-          z-index: 1;
+          font-size: 0.8rem;
         }
         .leaderboard-table th,
         .leaderboard-table td {
-          padding: 6px 8px;
+          padding: 6px 10px;
           text-align: left;
-          border-bottom: 1px solid rgba(30, 64, 175, 0.35);
+          border-bottom: 1px solid rgba(30, 64, 175, 0.3);
         }
         .leaderboard-table th {
           font-weight: 500;
@@ -1308,21 +1318,28 @@ export default function Home() {
           text-transform: uppercase;
           letter-spacing: 0.08em;
           font-size: 0.7rem;
+          background: rgba(15, 23, 42, 0.95);
         }
         .leaderboard-table tr:nth-child(even) td {
-          background: rgba(15, 23, 42, 0.85);
+          background: rgba(15, 23, 42, 0.8);
         }
         .leaderboard-table tr:nth-child(odd) td {
           background: rgba(15, 23, 42, 0.95);
         }
-        .leaderboard-table tr.self-row td {
+        .leaderboard-row-self td {
           background: radial-gradient(
             circle at top left,
-            rgba(129, 140, 248, 0.6),
-            rgba(15, 23, 42, 0.98)
+            rgba(129, 140, 248, 0.7),
+            rgba(15, 23, 42, 0.95)
           );
-          border-bottom-color: rgba(129, 140, 248, 0.95);
-          box-shadow: 0 0 18px rgba(129, 140, 248, 0.7);
+          border-bottom-color: rgba(129, 140, 248, 0.9);
+        }
+        .leaderboard-footer {
+          margin-top: 8px;
+          display: flex;
+          justify-content: flex-end;
+          gap: 6px;
+          font-size: 0.75rem;
         }
 
         /* Modals */
@@ -1379,12 +1396,8 @@ export default function Home() {
           .info-grid {
             grid-template-columns: 1fr;
           }
-          .leaderboard-header {
-            flex-direction: column;
-            align-items: flex-start;
-          }
-          .rank-pill-wrapper {
-            align-items: flex-start;
+          .leaderboard-card {
+            padding: 14px 12px 16px;
           }
         }
       `}</style>
