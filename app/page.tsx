@@ -46,6 +46,12 @@ const LEADERBOARD_MAX_ENTRIES = 20;
 const LEADERBOARD_FROM_BLOCK = 0;
 const LINEA_RPC_URL = "https://rpc.linea.build";
 
+// Only count FreeBuyRecorded events for the leaderboard
+// event FreeBuyRecorded(address indexed user, uint64 newTotalBuys, uint64 buysInWindow, uint64 windowStart);
+const FREE_BUY_TOPIC = ethers.utils.id(
+  "FreeBuyRecorded(address,uint64,uint64,uint64)"
+);
+
 // Allow window.ethereum
 declare global {
   interface Window {
@@ -196,52 +202,56 @@ export default function Home() {
     }
   };
 
-  // --------------------------------------------------
-  // Leaderboard: read logs from Linea RPC
-  // --------------------------------------------------
-  const loadLeaderboardFromChain = async () => {
-    try {
-      setIsLoadingLeaderboard(true);
-      setLeaderboardError(null);
+ // --------------------------------------------------
+// Leaderboard: read logs from Linea RPC
+//   Only count FreeBuyRecorded() events
+// --------------------------------------------------
+const loadLeaderboardFromChain = async () => {
+  try {
+    setIsLoadingLeaderboard(true);
+    setLeaderboardError(null);
 
-      // Read-only provider, no wallet required
-      const provider = new ethers.providers.JsonRpcProvider(LINEA_RPC_URL);
+    // Read-only provider, no wallet required
+    const provider = new ethers.providers.JsonRpcProvider(LINEA_RPC_URL);
 
-      const logs = await provider.getLogs({
-        address: TBAG_DAILY_BUYS_ADDRESS,
-        fromBlock: LEADERBOARD_FROM_BLOCK,
-        toBlock: "latest",
-      });
+    // Filter logs so we only get FreeBuyRecorded events
+    const logs = await provider.getLogs({
+      address: TBAG_DAILY_BUYS_ADDRESS,
+      fromBlock: LEADERBOARD_FROM_BLOCK,
+      toBlock: "latest",
+      topics: [FREE_BUY_TOPIC],
+    });
 
-      const counts = new Map<string, number>();
+    const counts = new Map<string, number>();
 
-      for (const log of logs) {
-        if (!log.topics || log.topics.length < 2) continue;
-        const topic = log.topics[1];
-        if (!topic || topic.length !== 66) continue;
+    for (const log of logs) {
+      if (!log.topics || log.topics.length < 2) continue;
 
-        try {
-          // Interpret topic[1] as the indexed buyer address
-          const addr = ethers.utils.getAddress("0x" + topic.slice(26));
-          counts.set(addr, (counts.get(addr) ?? 0) + 1);
-        } catch {
-          // ignore logs that don't decode cleanly into an address
-        }
+      const topic = log.topics[1];
+      if (!topic || topic.length !== 66) continue;
+
+      try {
+        // indexed user is in topics[1]
+        const addr = ethers.utils.getAddress("0x" + topic.slice(26));
+        counts.set(addr, (counts.get(addr) ?? 0) + 1);
+      } catch {
+        // ignore logs that don't decode cleanly into an address
       }
-
-      const rows: LeaderboardRow[] = Array.from(counts.entries())
-        .map(([wallet, totalBuys]) => ({ wallet, totalBuys }))
-        .sort((a, b) => b.totalBuys - a.totalBuys)
-        .slice(0, LEADERBOARD_MAX_ENTRIES);
-
-      setLeaderboardRows(rows);
-    } catch (err) {
-      console.error("Error loading leaderboard:", err);
-      setLeaderboardError("Could not load leaderboard.");
-    } finally {
-      setIsLoadingLeaderboard(false);
     }
-  };
+
+    const rows: LeaderboardRow[] = Array.from(counts.entries())
+      .map(([wallet, totalBuys]) => ({ wallet, totalBuys }))
+      .sort((a, b) => b.totalBuys - a.totalBuys)
+      .slice(0, LEADERBOARD_MAX_ENTRIES);
+
+    setLeaderboardRows(rows);
+  } catch (err) {
+    console.error("Error loading leaderboard:", err);
+    setLeaderboardError("Could not load leaderboard.");
+  } finally {
+    setIsLoadingLeaderboard(false);
+  }
+};
 
   // --------------------------------------------------
   // Connect / disconnect
