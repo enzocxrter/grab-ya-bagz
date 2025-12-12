@@ -41,7 +41,7 @@ const TBAG_DAILY_BUYS_ABI = [
 ];
 
 // Leaderboard config (logs-based)
-const LEADERBOARD_MAX_ENTRIES = 20;
+const LEADERBOARD_MAX_ENTRIES = 150;
 // Optional: set this to the deploy block of TbagDailyFreeBuys to speed things up
 const LEADERBOARD_FROM_BLOCK = 0;
 const LINEA_RPC_URL = "https://rpc.linea.build";
