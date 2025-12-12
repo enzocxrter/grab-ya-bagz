@@ -981,24 +981,23 @@ const loadLeaderboardFromChain = async () => {
                     </tr>
                   )}
                   {leaderboardRows.map((row, index) => {
-                    const isSelf =
-                      walletAddress &&
-                      row.wallet.toLowerCase() ===
-                        walletAddress.toLowerCase();
-                    return (
-                      <tr
-                        key={row.wallet}
-                        className={isSelf ? "leaderboard-row-self" : ""}
-                      >
-                        <td>{index + 1}</td>
-                        <td>
-                          {row.wallet.slice(0, 6)}...
-                          {row.wallet.slice(-4)}
-                        </td>
-                        <td>{row.totalBuys}</td>
-                      </tr>
-                    );
-                  })}
+  const isSelf =
+    walletAddress &&
+    row.wallet.toLowerCase() === walletAddress.toLowerCase();
+  return (
+    <tr
+      key={row.wallet}
+      className={isSelf ? "leaderboard-row-self" : ""}
+    >
+      <td>{index + 1}</td>
+      <td className={isSelf ? "wallet-cell-self" : ""}>
+        {row.wallet.slice(0, 6)}...{row.wallet.slice(-4)}
+        {isSelf && <span className="you-pill">You</span>}
+      </td>
+      <td>{row.totalBuys}</td>
+    </tr>
+  );
+})}
                 </tbody>
               </table>
             </div>
@@ -1385,13 +1384,38 @@ const loadLeaderboardFromChain = async () => {
           background: rgba(15, 23, 42, 0.95);
         }
         .leaderboard-row-self td {
-          background: radial-gradient(
-            circle at top left,
-            rgba(129, 140, 248, 0.7),
-            rgba(15, 23, 42, 0.95)
-          );
-          border-bottom-color: rgba(129, 140, 248, 0.9);
-        }
+  background: radial-gradient(
+    circle at top left,
+    rgba(34, 197, 94, 0.3),
+    rgba(15, 23, 42, 0.98)
+  );
+  border-bottom-color: rgba(34, 197, 94, 0.9);
+}
+
+/* subtle left accent bar on the rank cell */
+.leaderboard-row-self td:first-child {
+  border-left: 2px solid rgba(34, 197, 94, 0.95);
+}
+
+/* wallet cell styling when it's you */
+.wallet-cell-self {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #bbf7d0; /* same vibe as PoH verified */
+}
+
+/* tiny "You" pill */
+.you-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(34, 197, 94, 0.8);
+  background: rgba(34, 197, 94, 0.16);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #bbf7d0;
+}
         .leaderboard-footer {
           margin-top: 8px;
           display: flex;
