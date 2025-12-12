@@ -46,12 +46,6 @@ const LEADERBOARD_MAX_ENTRIES = 20;
 const LEADERBOARD_FROM_BLOCK = 0;
 const LINEA_RPC_URL = "https://rpc.linea.build";
 
-// Only count FreeBuyRecorded events for the leaderboard
-// event FreeBuyRecorded(address indexed user, uint64 newTotalBuys, uint64 buysInWindow, uint64 windowStart);
-const FREE_BUY_TOPIC = ethers.utils.id(
-  "FreeBuyRecorded(address,uint64,uint64,uint64)"
-);
-
 // Allow window.ethereum
 declare global {
   interface Window {
@@ -202,9 +196,10 @@ export default function Home() {
     }
   };
 
- // --------------------------------------------------
+// --------------------------------------------------
 // Leaderboard: read logs from Linea RPC
-//   Only count FreeBuyRecorded() events
+//   Discover addresses from all events, then use
+//   totalBuys(address) for the real free-buy count
 // --------------------------------------------------
 const loadLeaderboardFromChain = async () => {
   try {
@@ -214,15 +209,22 @@ const loadLeaderboardFromChain = async () => {
     // Read-only provider, no wallet required
     const provider = new ethers.providers.JsonRpcProvider(LINEA_RPC_URL);
 
-    // Filter logs so we only get FreeBuyRecorded events
+    // Contract instance for state reads
+    const contract = new ethers.Contract(
+      TBAG_DAILY_BUYS_ADDRESS,
+      TBAG_DAILY_BUYS_ABI,
+      provider
+    );
+
+    // Get ALL logs for this contract (buys + claims etc.)
     const logs = await provider.getLogs({
       address: TBAG_DAILY_BUYS_ADDRESS,
       fromBlock: LEADERBOARD_FROM_BLOCK,
       toBlock: "latest",
-      topics: [FREE_BUY_TOPIC],
     });
 
-    const counts = new Map<string, number>();
+    // Collect unique addresses from the first indexed topic
+    const addrSet = new Set<string>();
 
     for (const log of logs) {
       if (!log.topics || log.topics.length < 2) continue;
@@ -231,20 +233,36 @@ const loadLeaderboardFromChain = async () => {
       if (!topic || topic.length !== 66) continue;
 
       try {
-        // indexed user is in topics[1]
         const addr = ethers.utils.getAddress("0x" + topic.slice(26));
-        counts.set(addr, (counts.get(addr) ?? 0) + 1);
+        addrSet.add(addr);
       } catch {
         // ignore logs that don't decode cleanly into an address
       }
     }
 
-    const rows: LeaderboardRow[] = Array.from(counts.entries())
-      .map(([wallet, totalBuys]) => ({ wallet, totalBuys }))
-      .sort((a, b) => b.totalBuys - a.totalBuys)
-      .slice(0, LEADERBOARD_MAX_ENTRIES);
+    const addresses = Array.from(addrSet);
 
-    setLeaderboardRows(rows);
+    // Now get the REAL total free buys from contract state
+    const rows: LeaderboardRow[] = [];
+
+    // You can parallelize this if you like, but simple for-of is safer on RPCs
+    for (const wallet of addresses) {
+      try {
+        const totalBuysBn = await contract.totalBuys(wallet);
+        const totalBuys = Number(totalBuysBn);
+
+        if (totalBuys > 0) {
+          rows.push({ wallet, totalBuys });
+        }
+      } catch {
+        // If a read fails for some address, just skip it
+      }
+    }
+
+    // Sort by totalBuys desc and keep top N
+    rows.sort((a, b) => b.totalBuys - a.totalBuys);
+
+    setLeaderboardRows(rows.slice(0, LEADERBOARD_MAX_ENTRIES));
   } catch (err) {
     console.error("Error loading leaderboard:", err);
     setLeaderboardError("Could not load leaderboard.");
