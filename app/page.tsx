@@ -41,10 +41,19 @@ const TBAG_DAILY_BUYS_ABI = [
 ];
 
 // Leaderboard config (logs-based)
-const LEADERBOARD_MAX_ENTRIES = 150;
-// Optional: set this to the deploy block of TbagDailyFreeBuys to speed things up
-const LEADERBOARD_FROM_BLOCK = 0;
+const LEADERBOARD_MAX_ENTRIES = 100; // show up to top 100
+// Start from the contract's deploy block (approx from Linea error hint)
+const LEADERBOARD_FROM_BLOCK = 26505044;
 const LINEA_RPC_URL = "https://rpc.linea.build";
+
+// Only count FreeBuyRecorded events for the leaderboard
+// event FreeBuyRecorded(address indexed user, uint64 newTotalBuys, uint64 buysInWindow, uint64 windowStart);
+const FREE_BUY_TOPIC = ethers.utils.id(
+  "FreeBuyRecorded(address,uint64,uint64,uint64)"
+);
+
+// How many blocks per chunk when scanning logs (keeps each query under 10k results)
+const LOGS_BLOCK_CHUNK_SIZE = 1000;
 
 // Allow window.ethereum
 declare global {
@@ -196,80 +205,87 @@ export default function Home() {
     }
   };
 
-// --------------------------------------------------
-// Leaderboard: read logs from Linea RPC
-//   Discover addresses from all events, then use
-//   totalBuys(address) for the real free-buy count
-// --------------------------------------------------
-const loadLeaderboardFromChain = async () => {
-  try {
-    setIsLoadingLeaderboard(true);
-    setLeaderboardError(null);
+  // --------------------------------------------------
+  // Leaderboard: read logs from Linea RPC
+  //   Only count FreeBuyRecorded() events
+  //   + scan in block chunks to avoid 10k log limit
+  // --------------------------------------------------
+  const loadLeaderboardFromChain = async () => {
+    try {
+      setIsLoadingLeaderboard(true);
+      setLeaderboardError(null);
 
-    // Read-only provider, no wallet required
-    const provider = new ethers.providers.JsonRpcProvider(LINEA_RPC_URL);
+      // Read-only provider, no wallet required
+      const provider = new ethers.providers.JsonRpcProvider(LINEA_RPC_URL);
 
-    // Contract instance for state reads
-    const contract = new ethers.Contract(
-      TBAG_DAILY_BUYS_ADDRESS,
-      TBAG_DAILY_BUYS_ABI,
-      provider
-    );
+      const latestBlock = await provider.getBlockNumber();
+      const startBlock =
+        LEADERBOARD_FROM_BLOCK && LEADERBOARD_FROM_BLOCK > 0
+          ? LEADERBOARD_FROM_BLOCK
+          : 0;
 
-    // Get ALL logs for this contract (buys + claims etc.)
-    const logs = await provider.getLogs({
-      address: TBAG_DAILY_BUYS_ADDRESS,
-      fromBlock: LEADERBOARD_FROM_BLOCK,
-      toBlock: "latest",
-    });
+      const counts = new Map<string, number>();
 
-    // Collect unique addresses from the first indexed topic
-    const addrSet = new Set<string>();
+      for (
+        let fromBlock = startBlock;
+        fromBlock <= latestBlock;
+        fromBlock += LOGS_BLOCK_CHUNK_SIZE + 1
+      ) {
+        const toBlock = Math.min(
+          fromBlock + LOGS_BLOCK_CHUNK_SIZE,
+          latestBlock
+        );
 
-    for (const log of logs) {
-      if (!log.topics || log.topics.length < 2) continue;
+        try {
+          const logs = await provider.getLogs({
+            address: TBAG_DAILY_BUYS_ADDRESS,
+            fromBlock,
+            toBlock,
+            topics: [FREE_BUY_TOPIC],
+          });
 
-      const topic = log.topics[1];
-      if (!topic || topic.length !== 66) continue;
+          for (const log of logs) {
+            if (!log.topics || log.topics.length < 2) continue;
 
-      try {
-        const addr = ethers.utils.getAddress("0x" + topic.slice(26));
-        addrSet.add(addr);
-      } catch {
-        // ignore logs that don't decode cleanly into an address
-      }
-    }
+            const topic = log.topics[1];
+            if (!topic || topic.length !== 66) continue;
 
-    const addresses = Array.from(addrSet);
-
-    // Now get the REAL total free buys from contract state
-    const rows: LeaderboardRow[] = [];
-
-    // You can parallelize this if you like, but simple for-of is safer on RPCs
-    for (const wallet of addresses) {
-      try {
-        const totalBuysBn = await contract.totalBuys(wallet);
-        const totalBuys = Number(totalBuysBn);
-
-        if (totalBuys > 0) {
-          rows.push({ wallet, totalBuys });
+            try {
+              // indexed user is in topics[1]
+              const addr = ethers.utils.getAddress("0x" + topic.slice(26));
+              counts.set(addr, (counts.get(addr) ?? 0) + 1);
+            } catch {
+              // ignore logs that don't decode cleanly into an address
+            }
+          }
+        } catch (rangeErr: any) {
+          console.error(
+            `Error loading logs in range ${fromBlock}-${toBlock}:`,
+            rangeErr
+          );
+          // If a single range still somehow has >10k logs, we just bail gracefully.
+          if (rangeErr?.code === -32005) {
+            setLeaderboardError(
+              "Too many events in this range to load full leaderboard."
+            );
+            break;
+          }
         }
-      } catch {
-        // If a read fails for some address, just skip it
       }
+
+      const rows: LeaderboardRow[] = Array.from(counts.entries())
+        .map(([wallet, totalBuys]) => ({ wallet, totalBuys }))
+        .sort((a, b) => b.totalBuys - a.totalBuys)
+        .slice(0, LEADERBOARD_MAX_ENTRIES);
+
+      setLeaderboardRows(rows);
+    } catch (err) {
+      console.error("Error loading leaderboard:", err);
+      setLeaderboardError("Could not load leaderboard.");
+    } finally {
+      setIsLoadingLeaderboard(false);
     }
-
-    // Sort by totalBuys desc and keep top N
-    rows.sort((a, b) => b.totalBuys - a.totalBuys);
-
-    setLeaderboardRows(rows.slice(0, LEADERBOARD_MAX_ENTRIES));
-  } catch (err) {
-    console.error("Error loading leaderboard:", err);
-    setLeaderboardError("Could not load leaderboard.");
-  } finally {
-    setIsLoadingLeaderboard(false);
-  }
-};
+  };
 
   // --------------------------------------------------
   // Connect / disconnect
@@ -981,23 +997,24 @@ const loadLeaderboardFromChain = async () => {
                     </tr>
                   )}
                   {leaderboardRows.map((row, index) => {
-  const isSelf =
-    walletAddress &&
-    row.wallet.toLowerCase() === walletAddress.toLowerCase();
-  return (
-    <tr
-      key={row.wallet}
-      className={isSelf ? "leaderboard-row-self" : ""}
-    >
-      <td>{index + 1}</td>
-      <td className={isSelf ? "wallet-cell-self" : ""}>
-        {row.wallet.slice(0, 6)}...{row.wallet.slice(-4)}
-        {isSelf && <span className="you-pill">You</span>}
-      </td>
-      <td>{row.totalBuys}</td>
-    </tr>
-  );
-})}
+                    const isSelf =
+                      walletAddress &&
+                      row.wallet.toLowerCase() ===
+                        walletAddress.toLowerCase();
+                    return (
+                      <tr
+                        key={row.wallet}
+                        className={isSelf ? "leaderboard-row-self" : ""}
+                      >
+                        <td>{index + 1}</td>
+                        <td>
+                          {row.wallet.slice(0, 6)}...
+                          {row.wallet.slice(-4)}
+                        </td>
+                        <td>{row.totalBuys}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1384,38 +1401,13 @@ const loadLeaderboardFromChain = async () => {
           background: rgba(15, 23, 42, 0.95);
         }
         .leaderboard-row-self td {
-  background: radial-gradient(
-    circle at top left,
-    rgba(34, 197, 94, 0.3),
-    rgba(15, 23, 42, 0.98)
-  );
-  border-bottom-color: rgba(34, 197, 94, 0.9);
-}
-
-/* subtle left accent bar on the rank cell */
-.leaderboard-row-self td:first-child {
-  border-left: 2px solid rgba(34, 197, 94, 0.95);
-}
-
-/* wallet cell styling when it's you */
-.wallet-cell-self {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #bbf7d0; /* same vibe as PoH verified */
-}
-
-/* tiny "You" pill */
-.you-pill {
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(34, 197, 94, 0.8);
-  background: rgba(34, 197, 94, 0.16);
-  font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #bbf7d0;
-}
+          background: radial-gradient(
+            circle at top left,
+            rgba(129, 140, 248, 0.7),
+            rgba(15, 23, 42, 0.95)
+          );
+          border-bottom-color: rgba(129, 140, 248, 0.9);
+        }
         .leaderboard-footer {
           margin-top: 8px;
           display: flex;
