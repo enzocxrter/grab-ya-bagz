@@ -98,7 +98,7 @@ export default function Home() {
   const [totalBuysGlobal, setTotalBuysGlobal] = useState<number>(0);
 
   // Per-user
-  the const [yourTotalBuys, setYourTotalBuys] = useState<number>(0);
+  const [yourTotalBuys, setYourTotalBuys] = useState<number>(0);
   const [remainingBuysToday, setRemainingBuysToday] = useState<
     number | null
   >(null);
