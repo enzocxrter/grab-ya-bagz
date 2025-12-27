@@ -40,27 +40,21 @@ const TBAG_DAILY_BUYS_ABI = [
   "function claimAll() returns (uint256 buysClaimed, uint256 tokensPaid)",
 ];
 
-// --------------------------------------------------
 // Leaderboard config (logs-based)
-// --------------------------------------------------
-
-// How many rows to show
 const LEADERBOARD_MAX_ENTRIES = 100;
 
-// Start from the contract deploy block to avoid scanning from genesis
-// 0x1946F54 = 26505044 (from previous Linea RPC error hint)
+// Deploy block (approx) to avoid scanning from block 0
+// This is the block from which we start scanning Buy events
 const LEADERBOARD_FROM_BLOCK = 26505044;
 
-// Block chunk size for log scans – large to reduce RPC calls but still safe
-const LEADERBOARD_BLOCK_CHUNK = 25000;
+// Chunk size (in blocks) to avoid the "more than 10000 results" RPC error
+const LEADERBOARD_BLOCK_CHUNK = 30000;
 
 const LINEA_RPC_URL = "https://rpc.linea.build";
 
-// Only count FreeBuyRecorded events for the leaderboard
-// event FreeBuyRecorded(address indexed user, uint64 newTotalBuys, uint64 buysInWindow, uint64 windowStart);
-const FREE_BUY_TOPIC = ethers.utils.id(
-  "FreeBuyRecorded(address,uint64,uint64,uint64)"
-);
+// Only count Buy events for the leaderboard
+// event Buy(address indexed user, uint64 userTotalBuys, uint32 buysInCurrentWindow);
+const BUY_TOPIC = ethers.utils.id("Buy(address,uint64,uint32)");
 
 // Allow window.ethereum
 declare global {
@@ -99,13 +93,12 @@ export default function Home() {
 
   // Per-user
   const [yourTotalBuys, setYourTotalBuys] = useState<number>(0);
-  const [remainingBuysToday, setRemainingBuysToday] = useState<
-    number | null
-  >(null);
+  const [remainingBuysToday, setRemainingBuysToday] = useState<number | null>(
+    null
+  );
   const [claimableBuys, setClaimableBuys] = useState<number | null>(null);
-  const [claimableTokens, setClaimableTokens] = useState<
-    ethers.BigNumber | null
-  >(null);
+  const [claimableTokens, setClaimableTokens] =
+    useState<ethers.BigNumber | null>(null);
 
   // --------------------------------------------------
   // UI state
@@ -214,8 +207,8 @@ export default function Home() {
 
   // --------------------------------------------------
   // Leaderboard: read logs from Linea RPC
-  //   Only count FreeBuyRecorded() events
-  //   Uses chunky block ranges for speed
+  //   Only count Buy() events
+  //   Chunked to avoid >10000 logs error
   // --------------------------------------------------
   const loadLeaderboardFromChain = async () => {
     try {
@@ -228,47 +221,37 @@ export default function Home() {
       const latestBlock = await provider.getBlockNumber();
       const counts = new Map<string, number>();
 
-      let fromBlock = LEADERBOARD_FROM_BLOCK;
-
-      while (fromBlock <= latestBlock) {
+      for (
+        let fromBlock = LEADERBOARD_FROM_BLOCK;
+        fromBlock <= latestBlock;
+        fromBlock += LEADERBOARD_BLOCK_CHUNK + 1
+      ) {
         const toBlock = Math.min(
           fromBlock + LEADERBOARD_BLOCK_CHUNK,
           latestBlock
         );
 
-        try {
-          const logs = await provider.getLogs({
-            address: TBAG_DAILY_BUYS_ADDRESS,
-            fromBlock,
-            toBlock,
-            topics: [FREE_BUY_TOPIC],
-          });
+        const logs = await provider.getLogs({
+          address: TBAG_DAILY_BUYS_ADDRESS,
+          fromBlock,
+          toBlock,
+          topics: [BUY_TOPIC],
+        });
 
-          for (const log of logs) {
-            if (!log.topics || log.topics.length < 2) continue;
+        for (const log of logs) {
+          if (!log.topics || log.topics.length < 2) continue;
 
-            const topic = log.topics[1];
-            if (!topic || topic.length !== 66) continue;
+          const topic = log.topics[1];
+          if (!topic || topic.length !== 66) continue;
 
-            try {
-              const addr = ethers.utils.getAddress("0x" + topic.slice(26));
-              counts.set(addr, (counts.get(addr) ?? 0) + 1);
-            } catch {
-              // ignore logs that don't decode cleanly into an address
-            }
+          try {
+            // indexed user is in topics[1]
+            const addr = ethers.utils.getAddress("0x" + topic.slice(26));
+            counts.set(addr, (counts.get(addr) ?? 0) + 1);
+          } catch {
+            // ignore logs that don't decode cleanly into an address
           }
-        } catch (err) {
-          console.error(
-            `Error loading logs for blocks ${fromBlock}–${toBlock}:`,
-            err
-          );
-          setLeaderboardError(
-            "Could not load leaderboard logs from Linea RPC."
-          );
-          break;
         }
-
-        fromBlock = toBlock + 1;
       }
 
       const rows: LeaderboardRow[] = Array.from(counts.entries())
@@ -1401,10 +1384,11 @@ export default function Home() {
         .leaderboard-row-self td {
           background: radial-gradient(
             circle at top left,
-            rgba(129, 140, 248, 0.7),
+            rgba(34, 197, 94, 0.35),
             rgba(15, 23, 42, 0.95)
           );
-          border-bottom-color: rgba(129, 140, 248, 0.9);
+          border-bottom-color: rgba(34, 197, 94, 0.9);
+          color: #ecfdf5;
         }
         .leaderboard-footer {
           margin-top: 8px;
