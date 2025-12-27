@@ -40,10 +40,20 @@ const TBAG_DAILY_BUYS_ABI = [
   "function claimAll() returns (uint256 buysClaimed, uint256 tokensPaid)",
 ];
 
+// --------------------------------------------------
 // Leaderboard config (logs-based)
-const LEADERBOARD_MAX_ENTRIES = 100; // show up to top 100
-// Start from the contract's deploy block (approx from Linea error hint)
+// --------------------------------------------------
+
+// How many rows to show
+const LEADERBOARD_MAX_ENTRIES = 100;
+
+// Start from the contract deploy block to avoid scanning from genesis
+// 0x1946F54 = 26505044 (from previous Linea RPC error hint)
 const LEADERBOARD_FROM_BLOCK = 26505044;
+
+// Block chunk size for log scans – large to reduce RPC calls but still safe
+const LEADERBOARD_BLOCK_CHUNK = 25000;
+
 const LINEA_RPC_URL = "https://rpc.linea.build";
 
 // Only count FreeBuyRecorded events for the leaderboard
@@ -51,9 +61,6 @@ const LINEA_RPC_URL = "https://rpc.linea.build";
 const FREE_BUY_TOPIC = ethers.utils.id(
   "FreeBuyRecorded(address,uint64,uint64,uint64)"
 );
-
-// How many blocks per chunk when scanning logs (keeps each query under 10k results)
-const LOGS_BLOCK_CHUNK_SIZE = 1000;
 
 // Allow window.ethereum
 declare global {
@@ -91,7 +98,7 @@ export default function Home() {
   const [totalBuysGlobal, setTotalBuysGlobal] = useState<number>(0);
 
   // Per-user
-  const [yourTotalBuys, setYourTotalBuys] = useState<number>(0);
+  the const [yourTotalBuys, setYourTotalBuys] = useState<number>(0);
   const [remainingBuysToday, setRemainingBuysToday] = useState<
     number | null
   >(null);
@@ -208,7 +215,7 @@ export default function Home() {
   // --------------------------------------------------
   // Leaderboard: read logs from Linea RPC
   //   Only count FreeBuyRecorded() events
-  //   + scan in block chunks to avoid 10k log limit
+  //   Uses chunky block ranges for speed
   // --------------------------------------------------
   const loadLeaderboardFromChain = async () => {
     try {
@@ -219,20 +226,13 @@ export default function Home() {
       const provider = new ethers.providers.JsonRpcProvider(LINEA_RPC_URL);
 
       const latestBlock = await provider.getBlockNumber();
-      const startBlock =
-        LEADERBOARD_FROM_BLOCK && LEADERBOARD_FROM_BLOCK > 0
-          ? LEADERBOARD_FROM_BLOCK
-          : 0;
-
       const counts = new Map<string, number>();
 
-      for (
-        let fromBlock = startBlock;
-        fromBlock <= latestBlock;
-        fromBlock += LOGS_BLOCK_CHUNK_SIZE + 1
-      ) {
+      let fromBlock = LEADERBOARD_FROM_BLOCK;
+
+      while (fromBlock <= latestBlock) {
         const toBlock = Math.min(
-          fromBlock + LOGS_BLOCK_CHUNK_SIZE,
+          fromBlock + LEADERBOARD_BLOCK_CHUNK,
           latestBlock
         );
 
@@ -251,26 +251,24 @@ export default function Home() {
             if (!topic || topic.length !== 66) continue;
 
             try {
-              // indexed user is in topics[1]
               const addr = ethers.utils.getAddress("0x" + topic.slice(26));
               counts.set(addr, (counts.get(addr) ?? 0) + 1);
             } catch {
               // ignore logs that don't decode cleanly into an address
             }
           }
-        } catch (rangeErr: any) {
+        } catch (err) {
           console.error(
-            `Error loading logs in range ${fromBlock}-${toBlock}:`,
-            rangeErr
+            `Error loading logs for blocks ${fromBlock}–${toBlock}:`,
+            err
           );
-          // If a single range still somehow has >10k logs, we just bail gracefully.
-          if (rangeErr?.code === -32005) {
-            setLeaderboardError(
-              "Too many events in this range to load full leaderboard."
-            );
-            break;
-          }
+          setLeaderboardError(
+            "Could not load leaderboard logs from Linea RPC."
+          );
+          break;
         }
+
+        fromBlock = toBlock + 1;
       }
 
       const rows: LeaderboardRow[] = Array.from(counts.entries())
