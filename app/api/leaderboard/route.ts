@@ -13,7 +13,6 @@ const TBAG_DAILY_BUYS_ADDRESS =
 const LINEA_RPC_URL = process.env.LINEA_RPC_URL || "https://rpc.linea.build";
 
 // Deploy block for TbagDailyFreeBuys (decimal or hex).
-// You set TBAG_DAILY_BUYS_DEPLOY_BLOCK in Vercel.
 const DEPLOY_BLOCK_RAW = process.env.TBAG_DAILY_BUYS_DEPLOY_BLOCK || "0";
 const DEPLOY_BLOCK = DEPLOY_BLOCK_RAW.startsWith("0x")
   ? parseInt(DEPLOY_BLOCK_RAW, 16)
@@ -84,9 +83,18 @@ export async function GET() {
   try {
     const now = Date.now();
 
-    // Serve cached leaderboard if still fresh
+    // If we already have rows in-memory and they are fresh enough, use them
     if (cachedRows && now - cachedAt < CACHE_TTL_MS) {
-      return NextResponse.json({ rows: cachedRows }, { status: 200 });
+      return NextResponse.json(
+        { rows: cachedRows },
+        {
+          status: 200,
+          headers: {
+            // Let Vercel cache this at the edge
+            "Cache-Control": "s-maxage=60, stale-while-revalidate=300",
+          },
+        }
+      );
     }
 
     // Otherwise recompute from chain
@@ -94,12 +102,25 @@ export async function GET() {
     cachedRows = rows;
     cachedAt = now;
 
-    return NextResponse.json({ rows }, { status: 200 });
+    return NextResponse.json(
+      { rows },
+      {
+        status: 200,
+        headers: {
+          "Cache-Control": "s-maxage=60, stale-while-revalidate=300",
+        },
+      }
+    );
   } catch (err) {
     console.error("GET /api/leaderboard failed:", err);
     return NextResponse.json(
       { error: "Failed to load leaderboard", rows: [] },
-      { status: 500 }
+      {
+        status: 500,
+        headers: {
+          "Cache-Control": "s-maxage=60, stale-while-revalidate=300",
+        },
+      }
     );
   }
 }
