@@ -41,7 +41,7 @@ const TBAG_DAILY_BUYS_ABI = [
 ];
 
 // Leaderboard config (logs-based)
-const LEADERBOARD_MAX_ENTRIES = 100;
+const LEADERBOARD_MAX_ENTRIES = 500;
 
 // Deploy block (approx) to avoid scanning from block 0
 // This is the block from which we start scanning Buy events
