@@ -40,21 +40,8 @@ const TBAG_DAILY_BUYS_ABI = [
   "function claimAll() returns (uint256 buysClaimed, uint256 tokensPaid)",
 ];
 
-// Leaderboard config (logs-based)
+// (Optional) still keep this as a UX cap; API will also cap server-side
 const LEADERBOARD_MAX_ENTRIES = 500;
-
-// Deploy block (approx) to avoid scanning from block 0
-// This is the block from which we start scanning Buy events
-const LEADERBOARD_FROM_BLOCK = 26505044;
-
-// Chunk size (in blocks) to avoid the "more than 10000 results" RPC error
-const LEADERBOARD_BLOCK_CHUNK = 30000;
-
-const LINEA_RPC_URL = "https://rpc.linea.build";
-
-// Only count Buy events for the leaderboard
-// event Buy(address indexed user, uint64 userTotalBuys, uint32 buysInCurrentWindow);
-const BUY_TOPIC = ethers.utils.id("Buy(address,uint64,uint32)");
 
 // Allow window.ethereum
 declare global {
@@ -206,56 +193,31 @@ export default function Home() {
   };
 
   // --------------------------------------------------
-  // Leaderboard: read logs from Linea RPC
-  //   Only count Buy() events
-  //   Chunked to avoid >10000 logs error
+  // Leaderboard: load from API (cached at edge)
   // --------------------------------------------------
-  const loadLeaderboardFromChain = async () => {
+  const loadLeaderboardFromApi = async () => {
     try {
       setIsLoadingLeaderboard(true);
       setLeaderboardError(null);
 
-      // Read-only provider, no wallet required
-      const provider = new ethers.providers.JsonRpcProvider(LINEA_RPC_URL);
+      const res = await fetch("/api/leaderboard");
 
-      const latestBlock = await provider.getBlockNumber();
-      const counts = new Map<string, number>();
-
-      for (
-        let fromBlock = LEADERBOARD_FROM_BLOCK;
-        fromBlock <= latestBlock;
-        fromBlock += LEADERBOARD_BLOCK_CHUNK + 1
-      ) {
-        const toBlock = Math.min(
-          fromBlock + LEADERBOARD_BLOCK_CHUNK,
-          latestBlock
-        );
-
-        const logs = await provider.getLogs({
-          address: TBAG_DAILY_BUYS_ADDRESS,
-          fromBlock,
-          toBlock,
-          topics: [BUY_TOPIC],
-        });
-
-        for (const log of logs) {
-          if (!log.topics || log.topics.length < 2) continue;
-
-          const topic = log.topics[1];
-          if (!topic || topic.length !== 66) continue;
-
-          try {
-            // indexed user is in topics[1]
-            const addr = ethers.utils.getAddress("0x" + topic.slice(26));
-            counts.set(addr, (counts.get(addr) ?? 0) + 1);
-          } catch {
-            // ignore logs that don't decode cleanly into an address
-          }
-        }
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("Leaderboard API error:", res.status, text);
+        setLeaderboardError("Could not load leaderboard.");
+        setLeaderboardRows([]);
+        return;
       }
 
-      const rows: LeaderboardRow[] = Array.from(counts.entries())
-        .map(([wallet, totalBuys]) => ({ wallet, totalBuys }))
+      const data = await res.json();
+
+      const rows: LeaderboardRow[] = (data.rows ?? [])
+        .map((r: any) => ({
+          wallet: String(r.wallet ?? "").trim(),
+          totalBuys: Number(r.totalBuys ?? 0),
+        }))
+        .filter((r) => r.wallet) // sanity
         .sort((a, b) => b.totalBuys - a.totalBuys)
         .slice(0, LEADERBOARD_MAX_ENTRIES);
 
@@ -263,6 +225,7 @@ export default function Home() {
     } catch (err) {
       console.error("Error loading leaderboard:", err);
       setLeaderboardError("Could not load leaderboard.");
+      setLeaderboardRows([]);
     } finally {
       setIsLoadingLeaderboard(false);
     }
@@ -462,7 +425,7 @@ export default function Home() {
 
       await Promise.all([
         loadContractData(walletAddress),
-        loadLeaderboardFromChain(),
+        loadLeaderboardFromApi(), // refresh from API after new buy
       ]);
     } catch (err: any) {
       console.error("Buy error:", err);
@@ -683,7 +646,7 @@ export default function Home() {
   // Initial leaderboard load
   // --------------------------------------------------
   useEffect(() => {
-    loadLeaderboardFromChain().catch(console.error);
+    loadLeaderboardFromApi().catch(console.error);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
