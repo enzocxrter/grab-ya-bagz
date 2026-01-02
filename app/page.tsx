@@ -210,14 +210,16 @@ export default function Home() {
         return;
       }
 
-      const data = await res.json();
+      const data: { rows?: any[] } = await res.json();
 
-      const rows: LeaderboardRow[] = (data.rows ?? [])
-        .map((r: any) => ({
+      const rawRows: any[] = Array.isArray(data.rows) ? data.rows : [];
+
+      const rows: LeaderboardRow[] = rawRows
+        .map((r: any): LeaderboardRow => ({
           wallet: String(r.wallet ?? "").trim(),
           totalBuys: Number(r.totalBuys ?? 0),
         }))
-        .filter((r) => r.wallet) // sanity
+        .filter((r: LeaderboardRow) => r.wallet) // sanity
         .sort((a, b) => b.totalBuys - a.totalBuys)
         .slice(0, LEADERBOARD_MAX_ENTRIES);
 
