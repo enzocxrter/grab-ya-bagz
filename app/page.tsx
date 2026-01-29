@@ -8,6 +8,9 @@ import { ethers } from "ethers";
 // Config
 // --------------------------------------------------
 
+// 🔒 Global kill-switch for the app interactions
+const PROGRAM_ENDED = true;
+
 // Linea MAINNET TbagDailyFreeBuys contract
 const TBAG_DAILY_BUYS_ADDRESS =
   process.env.NEXT_PUBLIC_TBAG_DAILY_BUYS_ADDRESS ??
@@ -40,22 +43,8 @@ const TBAG_DAILY_BUYS_ABI = [
   "function claimAll() returns (uint256 buysClaimed, uint256 tokensPaid)",
 ];
 
-// Max number of wallets to show in leaderboard
+// (Optional) still keep this as a UX cap; API will also cap server-side
 const LEADERBOARD_MAX_ENTRIES = 500;
-
-// Linea RPC + logs config for leaderboard
-const LINEA_RPC_URL = "https://rpc.linea.build";
-
-// This is the block from which we start scanning Buy events
-// (approx deploy block of TbagDailyFreeBuys)
-const LEADERBOARD_FROM_BLOCK = 26505044;
-
-// Chunk size (in blocks) to avoid "more than 10000 results" RPC error
-const LEADERBOARD_BLOCK_CHUNK = 30000;
-
-// Only count Buy events for the leaderboard
-// event Buy(address indexed user, uint64 userTotalBuys, uint32 buysInCurrentWindow);
-const BUY_TOPIC = ethers.utils.id("Buy(address,uint64,uint32)");
 
 // Allow window.ethereum
 declare global {
@@ -112,6 +101,9 @@ export default function Home() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [showWelcomeModal, setShowWelcomeModal] = useState(true);
+
+  // New: “Ended” modal
+  const [showEndedModal, setShowEndedModal] = useState(false);
 
   // PoH
   const [isPohVerified, setIsPohVerified] = useState<boolean | null>(null);
@@ -207,60 +199,39 @@ export default function Home() {
   };
 
   // --------------------------------------------------
-  // Leaderboard: read logs from Linea RPC (on-chain)
-  //   Only count Buy() events, chunked to avoid >10000 logs error
+  // Leaderboard: load from API (cached at edge)
   // --------------------------------------------------
-  const loadLeaderboardFromChain = async () => {
+  const loadLeaderboardFromApi = async () => {
     try {
       setIsLoadingLeaderboard(true);
       setLeaderboardError(null);
 
-      const provider = new ethers.providers.JsonRpcProvider(LINEA_RPC_URL);
-      const latestBlock = await provider.getBlockNumber();
+      const res = await fetch("/api/leaderboard");
 
-      const counts = new Map<string, number>();
-
-      for (
-        let fromBlock = LEADERBOARD_FROM_BLOCK;
-        fromBlock <= latestBlock;
-        fromBlock += LEADERBOARD_BLOCK_CHUNK + 1
-      ) {
-        const toBlock = Math.min(
-          fromBlock + LEADERBOARD_BLOCK_CHUNK,
-          latestBlock
-        );
-
-        const logs = await provider.getLogs({
-          address: TBAG_DAILY_BUYS_ADDRESS,
-          fromBlock,
-          toBlock,
-          topics: [BUY_TOPIC],
-        });
-
-        for (const log of logs) {
-          if (!log.topics || log.topics.length < 2) continue;
-
-          const topic = log.topics[1];
-          if (!topic || topic.length !== 66) continue;
-
-          try {
-            const addr = ethers.utils.getAddress("0x" + topic.slice(26));
-            const prev = counts.get(addr) ?? 0;
-            counts.set(addr, prev + 1);
-          } catch {
-            // ignore malformed topics
-          }
-        }
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("Leaderboard API error:", res.status, text);
+        setLeaderboardError("Could not load leaderboard.");
+        setLeaderboardRows([]);
+        return;
       }
 
-      const rows: LeaderboardRow[] = Array.from(counts.entries())
-        .map(([wallet, totalBuys]) => ({ wallet, totalBuys }))
+      const data: { rows?: any[] } = await res.json();
+
+      const rawRows: any[] = Array.isArray(data.rows) ? data.rows : [];
+
+      const rows: LeaderboardRow[] = rawRows
+        .map((r: any): LeaderboardRow => ({
+          wallet: String(r.wallet ?? "").trim(),
+          totalBuys: Number(r.totalBuys ?? 0),
+        }))
+        .filter((r: LeaderboardRow) => r.wallet) // sanity
         .sort((a, b) => b.totalBuys - a.totalBuys)
         .slice(0, LEADERBOARD_MAX_ENTRIES);
 
       setLeaderboardRows(rows);
     } catch (err) {
-      console.error("Error loading leaderboard from chain:", err);
+      console.error("Error loading leaderboard:", err);
       setLeaderboardError("Could not load leaderboard.");
       setLeaderboardRows([]);
     } finally {
@@ -400,6 +371,7 @@ export default function Home() {
   // Buy flow
   // --------------------------------------------------
   const executeBuyTx = async () => {
+    // With PROGRAM_ENDED on, this should never be called
     try {
       setErrorMessage(null);
       setSuccessMessage(null);
@@ -462,7 +434,7 @@ export default function Home() {
 
       await Promise.all([
         loadContractData(walletAddress),
-        loadLeaderboardFromChain(), // refresh leaderboard after new buy
+        loadLeaderboardFromApi(), // refresh from API after new buy
       ]);
     } catch (err: any) {
       console.error("Buy error:", err);
@@ -503,6 +475,12 @@ export default function Home() {
   };
 
   const handlePrimaryAction = async () => {
+    // 🔒 Short-circuit: program ended
+    if (PROGRAM_ENDED) {
+      setShowEndedModal(true);
+      return;
+    }
+
     if (!walletAddress) {
       await connectWallet();
       return;
@@ -523,6 +501,12 @@ export default function Home() {
   // Claim flow (claimAll)
   // --------------------------------------------------
   const handleClaimAll = async () => {
+    // 🔒 Short-circuit: program ended
+    if (PROGRAM_ENDED) {
+      setShowEndedModal(true);
+      return;
+    }
+
     try {
       setErrorMessage(null);
       setSuccessMessage(null);
@@ -680,10 +664,10 @@ export default function Home() {
   }, [walletAddress, autoConnectEnabled]);
 
   // --------------------------------------------------
-  // Initial leaderboard load (on-chain)
+  // Initial leaderboard load
   // --------------------------------------------------
   useEffect(() => {
-    loadLeaderboardFromChain().catch(console.error);
+    loadLeaderboardFromApi().catch(console.error);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -706,6 +690,7 @@ export default function Home() {
   })();
 
   const buyButtonLabel = (() => {
+    if (PROGRAM_ENDED) return "Grab yer Bagz Ended";
     if (!walletAddress) return "Connect Wallet";
     if (!isOnTargetNetwork) return `Switch to ${TARGET_NETWORK_LABEL}`;
     if (isCheckingPoh) return "Checking PoH…";
@@ -718,6 +703,7 @@ export default function Home() {
     isBuying || isLoadingData || isCheckingPoh || !TBAG_DAILY_BUYS_ADDRESS;
 
   const claimButtonLabel = (() => {
+    if (PROGRAM_ENDED) return "Grab yer Bagz Ended";
     if (!walletAddress) return "Connect Wallet";
     if (!isOnTargetNetwork) return `Switch to ${TARGET_NETWORK_LABEL}`;
     if (isClaiming) return "Claiming...";
@@ -1002,7 +988,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* Welcome modal */}
+        {/* Welcome modal (you can remove this entirely if you want) */}
         {showWelcomeModal && (
           <div className="modal-backdrop">
             <div className="modal-card">
@@ -1040,7 +1026,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Confirm buy modal */}
+        {/* Confirm buy modal (won't be reachable when PROGRAM_ENDED = true) */}
         {showConfirmModal && (
           <div className="modal-backdrop">
             <div className="modal-card">
@@ -1067,6 +1053,28 @@ export default function Home() {
                   disabled={isBuying}
                 >
                   {isBuying ? "Processing..." : "Confirm Buy"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* NEW: Program Ended modal */}
+        {showEndedModal && (
+          <div className="modal-backdrop">
+            <div className="modal-card">
+              <h2>Grab yer Bagz has ended</h2>
+              <p className="modal-body">
+                Grab yer Bagz has ended. Final claims will be opened Monday 2nd
+                February.
+              </p>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="primary-btn"
+                  onClick={() => setShowEndedModal(false)}
+                >
+                  Close
                 </button>
               </div>
             </div>
